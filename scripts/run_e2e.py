@@ -29,7 +29,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # password used by scenarios 2/3).
 ADMIN_PW_STRONG = "ci-e2e-strong-pw-9X7K2mQ4vR8w"
 API_KEY = "ci-e2e-key"
-MODEL_ROUTES_JSON = '{"deepseek-chat":"default","deepseek-reasoner":"expert"}'
+MODEL_ROUTES_JSON = '{"deepseek-chat":"default","deepseek-reasoner":"thinking"}'
 
 
 SCENARIO_1_PY = """

@@ -28,10 +28,21 @@ interface ApiMessage {
   content: string
 }
 
-/** Display labels for the model dropdown — mark the quick/expert modes. */
+/**
+ * Display labels for the model dropdown.
+ *
+ * DeepSeek merged its quick/expert modes: the upstream serves ONE chat model
+ * and normalises `model_type` to "default". This proxy therefore serves a
+ * single model too — /v1/models lists just MODEL_NAME — and whether it thinks
+ * is configured server-side with THINKING (=auto/enabled/disabled).
+ *
+ * The dropdown still exists because the `model` field must be sent, and because
+ * an operator may declare extra names via MODEL_ROUTES; the labels below only
+ * decorate the two default names when they are present.
+ */
 const MODEL_LABELS: Record<string, string> = {
-  'deepseek-chat': 'deepseek-chat（快速 / 默认）',
-  'deepseek-reasoner': 'deepseek-reasoner（专家）',
+  'deepseek-chat': 'deepseek-chat（唯一模型）',
+  'deepseek-reasoner': 'deepseek-reasoner（deepseek-chat 的旧别名）',
 }
 
 export default function PlaygroundPage() {
@@ -40,8 +51,10 @@ export default function PlaygroundPage() {
 
   // Request parameters — these map to the fields the backend actually
   // forwards to DeepSeek (see server.py / adapter.py):
-  //   model          -> MODEL_ROUTES may map it to model_type (default/expert)
-  //   thinking_mode  -> DeepSeek thinking_enabled
+  //   model          -> must be sent, but it does NOT select a different
+  //                     upstream model: there is only one (MODEL_NAME). Names
+  //                     declared in MODEL_ROUTES only preselect capabilities.
+  //   thinking_mode  -> DeepSeek thinking_enabled  ← the real "expert" switch
   //   search_enabled -> DeepSeek search_enabled
   // temperature / top_p / max_tokens are ignored by the backend, so they
   // are intentionally not offered here.
@@ -225,8 +238,9 @@ export default function PlaygroundPage() {
               <Label>模型</Label>
               <ModelSelector value={model} onChange={setModel} labels={MODEL_LABELS} />
               <p className="text-[11px] text-muted-foreground">
-                经 <code className="font-mono">MODEL_ROUTES</code> 映射 DeepSeek
-                <code className="font-mono"> model_type</code>（default / expert）
+                只有一个模型；名字仅用于 <code className="font-mono">/v1/models</code>
+                与 <code className="font-mono">MODEL_ROUTES</code> 的预设匹配。是否思考由下面的开关（或服务端
+                <code className="font-mono"> THINKING</code>）决定
               </p>
             </div>
 
@@ -247,9 +261,14 @@ export default function PlaygroundPage() {
                 <Label htmlFor="thinking">思考模式</Label>
                 <p className="text-[11px] text-muted-foreground">
                   对应 DeepSeek <code className="font-mono">thinking_enabled</code>
+                  ，即原「专家模式」
                 </p>
               </div>
-              <Switch id="thinking" checked={thinking} onCheckedChange={setThinking} />
+              <Switch
+                id="thinking"
+                checked={thinking}
+                onCheckedChange={setThinking}
+              />
             </div>
 
             <div className="flex items-center justify-between">
@@ -267,9 +286,10 @@ export default function PlaygroundPage() {
                 <Info className="h-3.5 w-3.5" />
                 参数生效规则
               </p>
-              <p>· 服务端 .env 的 MODE / THINKING / SEARCH 优先级高于此处设置</p>
-              <p>· MODE=expert 时始终走专家模式（model_type=expert）</p>
+              <p>· 服务端 .env 的 THINKING / SEARCH 优先级高于此处设置</p>
+              <p>· 只有一个模型，思考与否不靠换模型名，而是这个开关 + THINKING</p>
               <p>· THINKING/SEARCH 为 enabled/disabled 时强制开关</p>
+              <p>· 旧的 MODE=expert / MODE=quick 仍兼容，等价于 THINKING=enabled / disabled</p>
               <p>· temperature / top_p / max_tokens 后端暂不生效，未提供</p>
             </div>
           </CardContent>

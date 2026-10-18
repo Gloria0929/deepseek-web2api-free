@@ -4,8 +4,8 @@ import { Card, CardContent } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
 
 /**
- * A single conversation turn. `reasoning` (DeepSeek expert-mode
- * thinking text) renders in a collapsible block above the content.
+ * A single conversation turn. `reasoning` (the thinking chain produced when
+ * thinking_enabled is on) renders in a collapsible block above the content.
  */
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant'

@@ -7,7 +7,7 @@ import type { ModelsResponse } from '@/lib/types'
 interface Props {
   value: string
   onChange: (v: string) => void
-  /** Optional display-label map (e.g. mark quick/expert modes). */
+  /** Optional display-label map (e.g. annotate each name's capability preset). */
   labels?: Record<string, string>
 }
 

@@ -724,11 +724,21 @@ class DeepSeekAdapter:
             # Expert mode: fragment switch
             if p == "response/fragments" and o == "APPEND":
                 if isinstance(v, list) and v:
-                    new_type = v[0].get('type', '')
+                    frag = v[0]
+                    new_type = frag.get('type', '')
                     if new_type == 'RESPONSE':
                         frag_type = 'content'
                     elif new_type == 'THINK':
                         frag_type = 'thinking'
+                    # A short answer can arrive entirely inside the APPEND that
+                    # introduces the RESPONSE fragment (observed for
+                    # "1+1=? 只回答数字" with thinking on: the frame carries
+                    # content="2" and there is no follow-up content token).
+                    # Without this the non-stream path returned an empty answer.
+                    seed = frag.get('content', '')
+                    if seed:
+                        (thinking_parts if frag_type == 'thinking'
+                         else content_parts).append(seed)
                 continue
 
             # Normal mode
