@@ -4,6 +4,7 @@ Covers the hint / toast error scanning, the empty-response retry, and
 the rate-limit backoff retry added in v3.2.1. All upstream traffic is
 mocked — nothing in this file touches the network.
 """
+import json
 import time
 
 import pytest
@@ -162,6 +163,46 @@ class TestNonStreamFragments:
         content, thinking = ad.chat("sess-1", "prompt", thinking_enabled=True)
         assert content == "你好"
         assert thinking == "想"
+
+
+class TestStreamFragments:
+    def test_answer_inside_fragment_append_is_not_lost(self, monkeypatch):
+        ad = _adapter()
+        monkeypatch.setattr(ad, "_pow_headers", lambda *a, **k: {})
+        monkeypatch.setattr(ad._client, "post",
+                            lambda *a, **k: _FakeStreamResp(TestNonStreamFragments._SSE))
+
+        tokens = list(ad.chat_stream("sess-1", "prompt", thinking_enabled=True))
+
+        assert "".join(t for t in tokens if isinstance(t, str)) == "2"
+        assert "".join(t["content"] for t in tokens
+                       if isinstance(t, dict) and t.get("__type") == "thinking") == "用户问 1+1，答案是 2。"
+
+    @pytest.mark.parametrize("fragment", [
+        {"type": "RESPONSE", "content": "first"},
+        {"type": "THINK", "content": "first"},
+        {"type": "RESPONSE", "content": ""},
+        {"type": "RESPONSE"},
+    ])
+    def test_fragment_seed_precedes_followup_tokens(self, monkeypatch, fragment):
+        ad = _adapter()
+        frames = [
+            {"v": {"response": {"fragments": [{"type": "THINK", "content": ""}]}}},
+            {"p": "response/fragments", "o": "APPEND", "v": [fragment]},
+            {"p": "response/fragments/-1/content", "o": "APPEND", "v": "next"},
+            {"v": "last"},
+        ]
+        sse = "".join("data: " + json.dumps(frame) + "\n\n" for frame in frames)
+        monkeypatch.setattr(ad, "_pow_headers", lambda *a, **k: {})
+        monkeypatch.setattr(ad._client, "post", lambda *a, **k: _FakeStreamResp(sse))
+
+        tokens = list(ad.chat_stream("sess-1", "prompt", thinking_enabled=True))
+
+        expected = ([fragment["content"]] if fragment.get("content") else []) + ["next", "last"]
+        if fragment["type"] == "THINK":
+            assert tokens == [{"__type": "thinking", "content": text} for text in expected]
+        else:
+            assert tokens == expected
 
 
 # ── chat() non-streaming retry ────────────────────────────────

@@ -1000,6 +1000,14 @@ class DeepSeekAdapter:
                             frag_type = 'content'
                         elif new_type == 'THINK':
                             frag_type = 'thinking'
+                        # Short answers may be entirely in the new fragment,
+                        # with no subsequent content token (same as non-stream).
+                        seed = v[0].get('content', '')
+                        if seed:
+                            if frag_type == 'thinking':
+                                yield {"__type": "thinking", "content": seed}
+                            else:
+                                yield seed
                     continue
 
                 # Normal mode content
