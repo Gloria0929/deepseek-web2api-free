@@ -336,6 +336,8 @@ class DeepSeekAdapter:
             "X-Client-Timezone-Offset": "28800",
             "x-client-bundle-id": "com.deepseek.chat",
         }
+        from deepseek_files import DeepSeekFilesClient
+        self.files = DeepSeekFilesClient(self._client, self._pow_headers, self._base_headers)
 
     @staticmethod
     def _normalize_token(token: str) -> str:
@@ -517,7 +519,8 @@ class DeepSeekAdapter:
     def _send_completion(self, session_id: str, prompt: str, stream: bool = False,
                          model_type: str | None = None,
                          thinking_enabled: bool = False, search_enabled: bool = False,
-                         parent_message_id: int | None = None):
+                         parent_message_id: int | None = None,
+                         ref_file_ids: list[str] | None = None):
         """Send a completion request, returns raw response.
 
         ``parent_message_id`` is the message id from the previous turn in
@@ -535,7 +538,7 @@ class DeepSeekAdapter:
             "parent_message_id": parent_message_id,
             "model_type": model_type,
             "prompt": prompt,
-            "ref_file_ids": [],
+            "ref_file_ids": ref_file_ids or [],
             "stream": stream,
             "thinking_enabled": thinking_enabled,
             "search_enabled": search_enabled,
@@ -567,7 +570,9 @@ class DeepSeekAdapter:
     def chat(self, session_id: str, prompt: str, model_type: str | None = None,
              thinking_enabled: bool = False, search_enabled: bool = False,
              parent_message_id: int | None = None,
-             ready_out: dict | None = None) -> tuple[str, str]:
+             ready_out: dict | None = None, ref_file_ids: list[str] | None = None,
+             retry_prompt: str | None = None,
+             retry_ref_file_ids: list[str] | None = None) -> tuple[str, str]:
         """Send a non-streaming chat message.
 
         Returns ``(content, thinking)``:
@@ -594,7 +599,7 @@ class DeepSeekAdapter:
                                       thinking_enabled=thinking_enabled,
                                       search_enabled=search_enabled,
                                       parent_message_id=parent_message_id,
-                                      ready_out=ready_out)
+                                      ready_out=ready_out, ref_file_ids=ref_file_ids)
                 if ready_out is not None:
                     ready_out["session_id"] = session_id
                 return ret
@@ -614,6 +619,9 @@ class DeepSeekAdapter:
                 # Fresh session: no parent id from the stale session may be
                 # re-sent, or the upstream replies empty again.
                 parent_message_id = None
+                if retry_prompt is not None:
+                    prompt = retry_prompt
+                    ref_file_ids = retry_ref_file_ids
             except UpstreamEmptyError:
                 if attempt > 1:
                     raise
@@ -621,17 +629,21 @@ class DeepSeekAdapter:
                 session_id = self.create_session()
                 # Fresh session: never re-send the stale parent id.
                 parent_message_id = None
+                if retry_prompt is not None:
+                    prompt = retry_prompt
+                    ref_file_ids = retry_ref_file_ids
         raise UpstreamEmptyError("upstream returned empty response")  # pragma: no cover
 
     def _chat_once(self, session_id: str, prompt: str, model_type: str | None = None,
                    thinking_enabled: bool = False, search_enabled: bool = False,
                    parent_message_id: int | None = None,
-                   ready_out: dict | None = None) -> tuple[str, str]:
+                   ready_out: dict | None = None,
+                   ref_file_ids: list[str] | None = None) -> tuple[str, str]:
         resp = self._send_completion(session_id, prompt, stream=False,
                                      model_type=model_type,
                                      thinking_enabled=thinking_enabled,
                                      search_enabled=search_enabled,
-                                     parent_message_id=parent_message_id)
+                                     parent_message_id=parent_message_id, ref_file_ids=ref_file_ids)
         if not resp.text or not resp.text.strip():
             raise UpstreamEmptyError("upstream returned empty response body")
 
@@ -771,7 +783,9 @@ class DeepSeekAdapter:
                     model_type: str | None = None,
                     thinking_enabled: bool = False, search_enabled: bool = False,
                     parent_message_id: int | None = None,
-                    ready_out: dict | None = None):
+                    ready_out: dict | None = None, ref_file_ids: list[str] | None = None,
+                    retry_prompt: str | None = None,
+                    retry_ref_file_ids: list[str] | None = None):
         """Stream a chat message, yields content tokens.
 
         In expert mode (model_type='expert'), yields dicts with
@@ -798,7 +812,7 @@ class DeepSeekAdapter:
                         thinking_enabled=thinking_enabled,
                         search_enabled=search_enabled,
                         parent_message_id=parent_message_id,
-                        ready_out=ready_out):
+                        ready_out=ready_out, ref_file_ids=ref_file_ids):
                     yielded = True
                     yield token
             except UserMutedError:
@@ -827,13 +841,17 @@ class DeepSeekAdapter:
             # the stale session is invalid there and makes the upstream
             # reply empty again. Start a fresh thread.
             parent_message_id = None
+            if retry_prompt is not None:
+                prompt = retry_prompt
+                ref_file_ids = retry_ref_file_ids
         raise UpstreamEmptyError("upstream returned empty response")  # pragma: no cover
 
     def _chat_stream_once(self, session_id: str, prompt: str,
                           model_type: str | None = None,
                           thinking_enabled: bool = False, search_enabled: bool = False,
                           parent_message_id: int | None = None,
-                          ready_out: dict | None = None):
+                          ready_out: dict | None = None,
+                          ref_file_ids: list[str] | None = None):
         headers = self._pow_headers("/api/v0/chat/completion")
         if parent_message_id is None:
             mid = self._msg_counters.get(session_id, 0) + 1
@@ -844,7 +862,7 @@ class DeepSeekAdapter:
             "parent_message_id": parent_message_id,
             "model_type": model_type,
             "prompt": prompt,
-            "ref_file_ids": [],
+            "ref_file_ids": ref_file_ids or [],
             "stream": True,
             "thinking_enabled": thinking_enabled,
             "search_enabled": search_enabled,

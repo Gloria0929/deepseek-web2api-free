@@ -11,6 +11,8 @@ import threading
 import time
 import uuid
 import hashlib
+import asyncio
+from contextlib import aclosing
 from typing import Optional, Union, Any
 
 import uvicorn
@@ -22,6 +24,11 @@ from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
+
+from image_inputs import ImageAttachment, ImageError, normalize_images
+from image_http import ImageBodyLimit, image_error_response
+from turn_preparation import prepare_turn
 
 from adapter import (
     DeepSeekAdapter,
@@ -205,6 +212,12 @@ def _check_rate_limit(request: Request) -> dict:
 
 
 app = FastAPI(title="DeepSeek Chat API", version="3.3.8")
+app.add_middleware(ImageBodyLimit)
+
+
+@app.exception_handler(ImageError)
+async def handle_image_error(request: Request, error: ImageError):
+    return image_error_response(request.url.path, error)
 
 # ── CORS ─────────────────────────────────────────────────────────────
 # Empty ALLOWED_ORIGINS ⇒ same-origin only. We deliberately do NOT set
@@ -326,6 +339,7 @@ def _validate_startup() -> None:
 class ContentPart(BaseModel):
     type: str
     text: Optional[str] = None
+    image_url: Optional[dict] = None
 
 
 class FunctionCall(BaseModel):
@@ -399,13 +413,18 @@ class AcquiredAccount:
         self._cache_key = cache_key
         self._cached_session: ChatSession | None = None
         self._released = False
+        self._pending_image_files: dict[str, str] | None = None
+        credential_material = str(getattr(acct, 'token', '')) + '\0' + str(getattr(acct, 'cookies', ''))
+        self._credential_fingerprint = hashlib.sha256(credential_material.encode()).hexdigest()
         # If we have a cache key, try to reuse the existing session first.
         if cache_key:
             cached = SESSION_CACHE.get(cache_key)
             # A DeepSeek session belongs to the credentials that created it.
             # Reject mismatches (including legacy entries without a binding)
             # instead of submitting account A's session with account B.
-            if cached is not None and cached.account_id == self.acct.id:
+            if (cached is not None and cached.account_id == self.acct.id
+                    and (cached.credential_fingerprint == self._credential_fingerprint
+                         or (not cached.credential_fingerprint and not cached.image_files))):
                 self._cached_session = cached
 
     def create_session(self) -> str:
@@ -417,7 +436,8 @@ class AcquiredAccount:
         ds_id = self.adapter.create_session()
         self._session_id = ds_id
         if self._cache_key:
-            sess = ChatSession(chat_session_id=ds_id, account_id=self.acct.id)
+            sess = ChatSession(chat_session_id=ds_id, account_id=self.acct.id,
+                               credential_fingerprint=self._credential_fingerprint)
             SESSION_CACHE.put(self._cache_key, sess)
             # Keep the live reference so record_message_id() can update the
             # parent id in place (the cache stores the same object).
@@ -458,7 +478,6 @@ class AcquiredAccount:
             # to *this* turn is still appended to the same upstream thread, so
             # the next turn gets its context back.
             cached.diverged_turns += 1
-            cached.sent_prompt = full_prompt
             log.info(
                 "session_prompt_diverged",
                 extra={
@@ -475,6 +494,17 @@ class AcquiredAccount:
                 extra={"session_id": cached.chat_session_id, "delta_chars": len(delta)},
             )
         return delta
+
+    @property
+    def previous_prompt(self) -> str:
+        return self._cached_session.sent_prompt if self._cached_session else ''
+
+    @property
+    def image_files(self) -> dict[str, str]:
+        return dict(self._cached_session.image_files) if self._cached_session else {}
+
+    def stage_image_files(self, files: dict[str, str]) -> None:
+        self._pending_image_files = files
 
     @property
     def session_id(self) -> str:
@@ -512,11 +542,14 @@ class AcquiredAccount:
             SESSION_CACHE.put(self._cache_key, sess)
         # Defensive repair for entries constructed by older versions.
         sess.account_id = self.acct.id
+        sess.credential_fingerprint = self._credential_fingerprint
         if session_id:
             sess.chat_session_id = session_id
         sess.parent_message_id = mid
         if full_prompt:
             sess.sent_prompt = full_prompt
+        if self._pending_image_files is not None:
+            sess.image_files = self._pending_image_files
         self._cached_session = sess
 
     def release(self):
@@ -766,7 +799,9 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
     _check_api_auth(request)
     rate_headers = _check_rate_limit(request)
     proxy_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
-    prompt = _build_prompt(req.messages, req.tools, req.tool_choice)
+    normalized, attachments = await run_in_threadpool(
+        normalize_images, [m.model_dump() for m in req.messages], 'openai')
+    prompt = _build_prompt([ChatMessage.model_validate(m) for m in normalized], req.tools, req.tool_choice)
 
     # Resolve model_type / thinking / search.  There is no quick-vs-expert model
     # any more: the upstream serves one model and normalises model_type to
@@ -783,10 +818,11 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
     cache_key = _cache_key(request, openai_user)
     if req.stream:
         return await _handle_stream(proxy_id, prompt, req.tools, model_type=model_type, thinking_mode=thinking, search_enabled=search, rate_headers=rate_headers,
-                                    cache_key=cache_key)
+                                    cache_key=cache_key, attachments=attachments)
 
-    return _handle_nonstream(proxy_id, prompt, req.tools, model_type=model_type, thinking_mode=thinking, search_enabled=search,
-                             cache_key=cache_key)
+    return await run_in_threadpool(_handle_nonstream, proxy_id, prompt, req.tools,
+        model_type=model_type, thinking_mode=thinking, search_enabled=search,
+        cache_key=cache_key, attachments=attachments)
 
 
 # ---- Anthropic /v1/messages endpoint ----
@@ -799,13 +835,17 @@ async def messages(req: AnthropicRequest, request: Request):
     proxy_id = _msg_id()
     system_str = req.system
     if isinstance(system_str, list):
+        if any(b.type in ('image', 'image_url') for b in system_str):
+            raise ImageError('Images are not supported in system content')
         system_str = " ".join(
             b.text for b in system_str if b.type == "text" and b.text
         )
 
     tools_dict = [t.model_dump() for t in req.tools] if req.tools else None
+    normalized, attachments = await run_in_threadpool(
+        normalize_images, [m.model_dump() for m in req.messages], 'anthropic')
     prompt = build_anthropic_prompt(
-        [m.model_dump() for m in req.messages],
+        normalized,
         tools=tools_dict,
         system_str=system_str,
     )
@@ -831,33 +871,125 @@ async def messages(req: AnthropicRequest, request: Request):
                                        model_type=model_type, thinking_mode=thinking,
                                        search_enabled=search,
                                        rate_headers=rate_headers,
-                                       cache_key=cache_key)
+                                       cache_key=cache_key, attachments=attachments)
 
-    return _anthropic_nonstream(proxy_id, prompt, tool_names,
+    return await run_in_threadpool(_anthropic_nonstream, proxy_id, prompt, tool_names,
                                 model_type=model_type, thinking_mode=thinking,
                                 search_enabled=search,
-                                cache_key=cache_key)
+                                cache_key=cache_key, attachments=attachments)
+
+
+async def _prepare_stream_account(prompt, attachments, cache_key, thinking, model_type):
+    # Raw Task.cancel can interrupt an await while its worker keeps running.
+    # The worker owns cleanup until it atomically hands off a finished result.
+    lock = threading.Lock()
+    cancelled = threading.Event()
+    completed = []
+    def prepare():
+        acquired = _acquire(cache_key=cache_key)
+        handed_off = False
+        try:
+            if cancelled.is_set():
+                return None
+            turn = prepare_turn(acquired, prompt, attachments, thinking=thinking,
+                                model_type=model_type or DEFAULT_MODEL_TYPE)
+            with lock:
+                if not cancelled.is_set():
+                    completed.append(acquired)
+                    handed_off = True
+            return acquired, turn
+        except Exception as error:
+            if not isinstance(error, ImageError):
+                pool.mark_error(acquired.acct, str(error))
+            raise
+        finally:
+            if not handed_off:
+                acquired.release()
+    try:
+        return await run_in_threadpool(prepare)
+    except BaseException:
+        with lock:
+            cancelled.set()
+            owned = completed.pop() if completed else None
+        if owned is not None:
+            owned.release()
+        raise
+
+
+async def _thread_step(function, *args):
+    """A cancelled reader must drain its in-flight thread before cleanup."""
+    worker = asyncio.create_task(run_in_threadpool(function, *args))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        if not worker.cancelled():
+            worker.exception()  # retrieve a failure while preserving cancellation
+        raise
+
+
+async def _iterate_upstream(iterator):
+    end = object()
+    try:
+        while True:
+            token = await _thread_step(next, iterator, end)
+            if token is end:
+                break
+            yield token
+    finally:
+        close = getattr(iterator, 'close', None)
+        if close is not None:
+            await _thread_step(close)
+
+
+class _AccountStreamingResponse(StreamingResponse):
+    """Release even if the response is cancelled before its generator starts."""
+    def __init__(self, acquired, *args, **kwargs):
+        self.acquired = acquired
+        super().__init__(*args, **kwargs)
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            try:
+                close = getattr(self.body_iterator, 'aclose', None)
+                if close is not None:
+                    await close()
+            finally:
+                self.acquired.release()
 
 
 def _anthropic_nonstream(msg_id: str, prompt: str, tool_names: list[str],
                          model_type: str | None = None,
                          thinking_mode: bool = False, search_enabled: bool = False,
-                         cache_key: str | None = None):
+                         cache_key: str | None = None,
+                         attachments: tuple[ImageAttachment, ...] = ()):
     acq = _acquire(cache_key=cache_key)
     try:
-        eff = acq.prepare_prompt(prompt)
-        ds_id = acq.create_session()
+        turn = prepare_turn(acq, prompt, attachments, thinking=thinking_mode,
+                            model_type=model_type or DEFAULT_MODEL_TYPE)
+        eff, ds_id = turn.prompt, turn.session_id
         t0 = time.time()
         ready_out: dict = {}
         content, thinking = acq.adapter.chat(ds_id, eff, model_type=model_type,
                                               thinking_enabled=thinking_mode, search_enabled=search_enabled,
                                               parent_message_id=acq.parent_message_id,
-                                              ready_out=ready_out)
+                                              ready_out=ready_out, **turn.completion_options())
         if ready_out.get("response_message_id") is not None:
             acq.record_message_id(ready_out["response_message_id"],
                                   ready_out.get("session_id"),
                                   full_prompt=prompt)
         get_stats().record(MODEL_NAME, (time.time() - t0) * 1000)
+    except ImageError:
+        get_stats().record(MODEL_NAME, 0, success=False)
+        raise
     except RateLimitError as e:
         # Match the OpenAI endpoint: upstream throttling is a client-visible
         # 429, not an opaque Anthropic 500. This includes account mute errors
@@ -900,34 +1032,29 @@ async def _anthropic_stream(msg_id: str, prompt: str, tool_names: list[str],
                             model_type: str | None = None,
                             thinking_mode: bool = False, search_enabled: bool = False,
                             rate_headers: dict | None = None,
-                            cache_key: str | None = None):
-    acq = _acquire(cache_key=cache_key)
-    try:
-        eff = acq.prepare_prompt(prompt)
-        ds_id = acq.create_session()
-    except Exception as e:
-        get_stats().record(MODEL_NAME, 0, success=False)
-        pool.mark_error(acq.acct, str(e))
-        acq.release()
-        raise
+                            cache_key: str | None = None,
+                            attachments: tuple[ImageAttachment, ...] = ()):
+    acq, turn = await _prepare_stream_account(prompt, attachments, cache_key, thinking_mode, model_type)
+    eff, ds_id = turn.prompt, turn.session_id
     t0 = time.time()
 
     async def event_stream():
         nonlocal t0
         ready_out: dict = {}
         try:
-            for event in stream_response(
+            async with aclosing(_iterate_upstream(stream_response(
                 msg_id, MODEL_NAME,
                 acq.adapter.chat_stream(ds_id, eff,
                                        model_type=model_type,
                                        thinking_enabled=thinking_mode,
                                        search_enabled=search_enabled,
                                        parent_message_id=acq.parent_message_id,
-                                       ready_out=ready_out),
+                                       ready_out=ready_out, **turn.completion_options()),
                 tool_names,
                 thinking_mode=thinking_mode,
-            ):
-                yield event
+            ))) as upstream:
+                async for event in upstream:
+                    yield event
             if ready_out.get("response_message_id") is not None:
                 acq.record_message_id(ready_out["response_message_id"],
                                       ready_out.get("session_id"),
@@ -944,7 +1071,7 @@ async def _anthropic_stream(msg_id: str, prompt: str, tool_names: list[str],
         finally:
             acq.release()
 
-    return StreamingResponse(
+    return _AccountStreamingResponse(acq,
         event_stream(),
         media_type="text/event-stream",
         headers={
@@ -961,19 +1088,21 @@ async def _anthropic_stream(msg_id: str, prompt: str, tool_names: list[str],
 def _handle_nonstream(proxy_id: str, prompt: str, tools: list[ToolDef] | None = None,
                       model_type: str | None = None,
                       thinking_mode: bool = False, search_enabled: bool = False,
-                      cache_key: str | None = None):
+                      cache_key: str | None = None,
+                      attachments: tuple[ImageAttachment, ...] = ()):
     """Non-streaming completion with tool call detection."""
     prompt_tokens = count_text(prompt)
     acq = _acquire(cache_key=cache_key)
     try:
-        eff = acq.prepare_prompt(prompt)
-        ds_id = acq.create_session()
+        turn = prepare_turn(acq, prompt, attachments, thinking=thinking_mode,
+                            model_type=model_type or DEFAULT_MODEL_TYPE)
+        eff, ds_id = turn.prompt, turn.session_id
         t0 = time.time()
         ready_out: dict = {}
         content, thinking = acq.adapter.chat(ds_id, eff, model_type=model_type,
                                               thinking_enabled=thinking_mode, search_enabled=search_enabled,
                                               parent_message_id=acq.parent_message_id,
-                                              ready_out=ready_out)
+                                              ready_out=ready_out, **turn.completion_options())
         if ready_out.get("response_message_id") is not None:
             acq.record_message_id(ready_out["response_message_id"],
                                   ready_out.get("session_id"),
@@ -981,6 +1110,9 @@ def _handle_nonstream(proxy_id: str, prompt: str, tools: list[ToolDef] | None = 
         completion_tokens = count_text(content) + count_text(thinking)
         get_stats().record(MODEL_NAME, (time.time() - t0) * 1000,
                            prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
+    except ImageError:
+        get_stats().record(MODEL_NAME, 0, success=False)
+        raise
     except RateLimitError as e:
         # Rate limiting is a transient upstream state, not a credential
         # problem — do NOT mark the account as errored, or the pool would
@@ -1068,18 +1200,12 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
                          model_type: str | None = None,
                          thinking_mode: bool = False, search_enabled: bool = False,
                          rate_headers: dict | None = None,
-                         cache_key: str | None = None):
+                         cache_key: str | None = None,
+                         attachments: tuple[ImageAttachment, ...] = ()):
     """Streaming completion with StreamSieve tool call detection and thinking support."""
     prompt_tokens = count_text(prompt)
-    acq = _acquire(cache_key=cache_key)
-    try:
-        eff = acq.prepare_prompt(prompt)
-        ds_id = acq.create_session()
-    except Exception as e:
-        get_stats().record(MODEL_NAME, 0, success=False, prompt_tokens=prompt_tokens)
-        pool.mark_error(acq.acct, str(e))
-        acq.release()
-        raise
+    acq, turn = await _prepare_stream_account(prompt, attachments, cache_key, thinking_mode, model_type)
+    eff, ds_id = turn.prompt, turn.session_id
     tool_names = _get_tool_names(tools)
     t0 = time.time()
 
@@ -1109,47 +1235,48 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
                                           ready_out.get("session_id"),
                                           full_prompt=prompt)
 
-            for token in acq.adapter.chat_stream(ds_id, eff,
+            async with aclosing(_iterate_upstream(acq.adapter.chat_stream(ds_id, eff,
                                                   model_type=model_type,
                                                   thinking_enabled=thinking_mode,
                                                   search_enabled=search_enabled,
                                                   parent_message_id=acq.parent_message_id,
-                                                  ready_out=ready_out):
-                if isinstance(token, dict):
-                    tt = token.get("__type")
-                    if tt == "status":
-                        if token["status"] == "FINISHED":
-                            break
-                        continue
-                    elif tt == "thinking":
-                        content = token.get("content", "")
-                        if content:
-                            completion_parts.append(content)
-                            if not role_sent:
-                                yield _openai_chunk(proxy_id, reasoning_content="", role="assistant")
-                                role_sent = True
-                            yield _openai_chunk(proxy_id, reasoning_content=content)
-                        continue
+                                                  ready_out=ready_out, **turn.completion_options()))) as upstream:
+                async for token in upstream:
+                    if isinstance(token, dict):
+                        tt = token.get("__type")
+                        if tt == "status":
+                            if token["status"] == "FINISHED":
+                                break
+                            continue
+                        elif tt == "thinking":
+                            content = token.get("content", "")
+                            if content:
+                                completion_parts.append(content)
+                                if not role_sent:
+                                    yield _openai_chunk(proxy_id, reasoning_content="", role="assistant")
+                                    role_sent = True
+                                yield _openai_chunk(proxy_id, reasoning_content=content)
+                            continue
 
-                # Normal text token (str) — feed to sieve
-                full_buf += token
-                for evt in sieve.feed(token):
-                    if evt.type == "text":
-                        if evt.data:
-                            completion_parts.append(evt.data)
-                            if not role_sent:
-                                if thinking_mode:
-                                    yield _openai_chunk(proxy_id, reasoning_content="")
-                                yield _openai_chunk(proxy_id, content=evt.data, role="assistant")
-                                role_sent = True
-                            else:
-                                yield _openai_chunk(proxy_id, content=evt.data)
-                    elif evt.type == "tool_calls":
-                        for chunk in _emit_tool_calls_chunks(evt.data, proxy_id):
-                            yield chunk
-                        _record_turn()
-                        yield "data: [DONE]\n\n"
-                        return
+                    # Normal text token (str) — feed to sieve
+                    full_buf += token
+                    for evt in sieve.feed(token):
+                        if evt.type == "text":
+                            if evt.data:
+                                completion_parts.append(evt.data)
+                                if not role_sent:
+                                    if thinking_mode:
+                                        yield _openai_chunk(proxy_id, reasoning_content="")
+                                    yield _openai_chunk(proxy_id, content=evt.data, role="assistant")
+                                    role_sent = True
+                                else:
+                                    yield _openai_chunk(proxy_id, content=evt.data)
+                        elif evt.type == "tool_calls":
+                            for chunk in _emit_tool_calls_chunks(evt.data, proxy_id):
+                                yield chunk
+                            _record_turn()
+                            yield "data: [DONE]\n\n"
+                            return
 
             # Flush sieve
             had_tool = False
@@ -1227,7 +1354,7 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
         finally:
             acq.release()
 
-    return StreamingResponse(
+    return _AccountStreamingResponse(acq,
         event_stream(),
         media_type="text/event-stream",
         headers={

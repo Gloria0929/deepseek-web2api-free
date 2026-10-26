@@ -1,5 +1,14 @@
 # AGENTS.md — DeepSeek Chat API Proxy (Preview)
 
+## 多模态输入（2026-10-26）
+
+- OpenAI `image_url`、Anthropic `image.source`（含用户 tool_result 嵌套图片）均进入共享准备链，四条聊天路径支持静态 JPEG/PNG/WebP。
+- `image_inputs.py` 管理内部类型、限额和有序附件标记；`image_sources.py` 管理 base64/data URL、公网地址校验、DNS 固定连接和 Pillow 校验。
+- `deepseek_files.py` 使用同账号 transport 和上传专用 PoW，multipart `file` 上传后以重复 `file_ids` 参数轮询到 SUCCESS；不要使用逗号拼接。
+- `turn_preparation.py` 共用账号绑定、图片去重、增量 prompt/refs 和新会话重试输入；引用仅在会话内缓存，绑定调用方、账号 ID 和凭证指纹，不持久化图片。
+- `image_http.py` 限制 JSON 请求体并渲染两种协议的图片错误；准备工作和同步流读取在线程执行。历史状态在聊天成功后提交。
+- 配置与示例见 README 的“图片输入与多模态”。OpenAI 非流式 usage 为本地文字估算，Anthropic usage 仍为 -1；均不提供准确视觉 token。历史发布记录仅描述当时行为，当前能力以本节和对应实现为准。
+
 > 本文档面向后续维护本项目的 AI 智能体，完整阐述项目的实现原理、协议细节、代码架构和已知问题。**请先全文阅读本文档再开始任何修改**。
 
 ## 当前账号配置规则
@@ -218,7 +227,7 @@ D:\the llaa\DS反代 --pre\
 ├── start.bat              # Windows 一键启动脚本（自动 venv/依赖/WebUI/开浏览器）
 ├── webui-new/             # 管理面板前端（v3.0.0+，React SPA，需 npm 构建）
 │   └── dist/              #   构建产物（gitignored），server.py 伺服于 /webui/*
-├── .env                   # 环境配置（含 TOKEN/COOKIE，不提交）
+├── .env                   # 运行配置（不存账号凭证，不提交）
 ├── .env.example           # 配置模板（提交到仓库）
 ├── requirements.txt       # Python 依赖
 ├── README.md              # 用户文档
@@ -251,23 +260,15 @@ D:\the llaa\DS反代 --pre\
 | `start.bat` | Windows 一键启动脚本（GBK 编码 + CRLF，勿改编码）。流程：定位 Python 3.10+ → 检测/创建虚拟环境（`.venv`/`venv`/`env`）→ `pip install --dry-run` 校验依赖（缺失自动安装）→ WebUI dist 缺失时自动 `npm` 构建 → 端口检查（只杀命令行匹配 `uvicorn`/`server:app`/`server.py`/`ds2api` 的本项目进程，其他进程拒绝杀并提示）→ 打印访问地址并默认 3s 后自动打开浏览器（`WEBUI_OPEN=0` 跳过）。支持 `PORT`/`HOST` 环境变量覆盖。 |
 | `webui-new/` | 管理面板前端（v3.0.0+，Vite + React 18 + TypeScript + shadcn/ui SPA）。源码构建产物在 `webui-new/dist/`（gitignored），由 `server.py` 伺服于 `/webui/*`。**必须**以 `base: '/webui/'` + react-router `basename: '/webui'` 构建，否则资源 404。旧版 `webui/`（vanilla）已删除。 |
 | `requirements.txt` | Python 依赖声明。关键依赖版本要求见下表。 |
-| `.env.example` | 环境配置模板。复制为 `.env` 后填入凭证。提交到仓库但不含敏感信息。 |
+| `.env.example` | 环境配置模板。复制为 `.env` 后配置运行参数；账号凭证放入账号池。提交到仓库但不含敏感信息。 |
 
-**依赖版本说明：**
-
-| 包 | 最低版本 | 用途 | 备注 |
-|---|---------|------|------|
-| `fastapi` | 0.100.0 | Web 框架 | 0.100+ 支持 Pydantic v2 |
-| `uvicorn` | 0.20.0 | ASGI 服务器 | 0.20+ 支持 lifespan |
-| `httpx` | 0.24.0 | HTTP 客户端 | 0.24+ 修复关键连接池 bug |
-| `wasmtime` | 14.0.0 | WASM 运行时 | 14.0+ 是首个稳定支持 Windows 的版本 |
-| `python-dotenv` | 1.0.0 | .env 加载 | 1.0+ 行为稳定 |
+**依赖版本说明：** 以 requirements.txt 为准；README 的依赖表逐项对应最低版本。上游使用 curl_cffi，图片校验使用 Pillow，httpx/httpx2 用于测试兼容，不是上游传输。
 
 ### 2.2 开发环境搭建
 
 ```bash
 # 1. 克隆/进入项目目录
-cd "D:\the llaa\DS反代 --pre"
+cd deepseek-web2api-free
 
 # 2. 安装依赖
 pip install -r requirements.txt
@@ -450,7 +451,7 @@ add_to_stack(16)                       // 恢复栈指针
 
 - 单次求解约 0.1-0.3s（取决于 difficulty）
 - `_WASMSolver` 实例被 `DeepSeekAdapter` 懒加载且复用（单例）
-- WASM `Store` 实例不可跨线程共享，但本项目为单线程运行
+- 同一求解器通过锁串行访问；准备和流读取可在线程中运行，不应假设整个服务为单线程
 
 ### 4.5 局限性
 
@@ -504,47 +505,15 @@ def create_session(self) -> str:
 
 ### 5.3 Session 存储
 
-```python
-# server.py — 内存 dict
-_sessions: dict[str, str] = {}
-# key:   proxy session UUID (由 server.py 生成)
-# value: DeepSeek session ID (由 adapter.create_session() 返回)
-```
-
-`_get_session()` 生成代理 session ID，调用 adapter 创建真实 session，建立映射。
-`_get_ds_session()` 根据代理 session ID 查找真实 session。
+`SESSION_CACHE` 是 `SessionCache` 的 TTL/LRU 缓存。键由调用方鉴权范围和显式会话标识生成，不从消息内容猜测。`ChatSession` 记录上游会话、真实 parent ID、账号 ID、凭证指纹、已发送 prompt 与最多 64 个图片哈希→文件 ID 引用。当前没有旧版 `_sessions`、`_get_session()` 或 `_get_ds_session()` 映射。
 
 ### 5.4 消息 ID 追踪
 
-复用一个上游会话时（`SESSION_CACHE` 命中），同一会话内的消息需要递增 `parent_message_id`。
-
-```python
-# adapter.py
-self._msg_counters: dict[str, int] = {}  # key: session_id, value: count
-```
-
-- 每次 `_send_completion` 调用时自增
-- 首次请求: `parent_message_id: null`
-- 后续请求: `parent_message_id: 1, 2, 3...`
-
-**注意：** 实际生效的 `parent_message_id` 由 `SESSION_CACHE` 维护（v3.2.3 起）：adapter 从 SSE `event: ready` 的 `response_message_id` 提取真实 message id，`record_message_id()` 写回缓存，下一轮再取出发给上游。只有新建上游会话（无缓存）或限流/空响应后换会话重试时才回落到 `null`；`_msg_counters` 的自增仍保留，供绕过 server 缓存的直接调用（调试脚本）使用。
+优先使用 SSE `ready.response_message_id`（或兼容响应字段），成功后由 `record_message_id()` 写回，下一轮以此为 parent。不要把真实上游 ID 假设成每轮加一。`adapter._msg_counters` 只为无显式 parent 的直接调用提供旧式兜底；新会话首轮及重试换会话的 parent 为 null。
 
 ### 5.5 Session 存储策略
 
-`_sessions` 仍是**简单的内存 dict**（代理 session UUID → DeepSeek session ID）：
-
-```python
-# server.py
-_sessions: dict[str, str] = {}
-```
-
-多轮复用走的是另一套带 TTL 的 `SESSION_CACHE`（默认 1800s）；`_sessions` 本身不做清理，仍按以下理由**选择不实现**：
-- 没有显式会话标识时每轮都新建 session，单个请求生命周期极短，session 不会被复用
-- DeepSeek 服务端的 session TTL 约 3 天（259200s），旧 session ID 无实际危害
-- Python dict 的内存效率足以应付常规负载（100 万次请求约 150MB）
-- 增加清理逻辑增加了代码复杂度，且对正确性无帮助
-
-**缓存键（v3.3.8 现状）：** 多轮会话缓存键由 `_cache_key(request, conversation_id)` 生成，形如 `conv:<sha256>`，由「会话标识 + 调用方 scope（API key 的哈希；无鉴权时为客户端 IP）」派生。流式与非流式**共用同一命名空间**——v3.2.2 引入的 `stream:`/`nonstream:` 前缀已在 v3.3.8 移除（见文首 v3.3.8 小节），同一会话中途切换 `stream` 不再另起新上游会话。
+`SESSION_CACHE_TTL` 默认 1800 秒，`SESSION_CACHE_MAX` 默认 10000；按 TTL/LRU 清理。没有显式会话标识时不缓存上游链。缓存引用不能跨调用方、账号或凭证版本复用。图片字节仅在请求准备期间使用，不持久化；调用方需要保留原图以支持换账号或重建历史。
 
 ### 5.6 多轮 prompt 组装：增量与发散（v3.3.8）
 
@@ -780,7 +749,7 @@ BATCH 通常在快速模式中出现，专家模式中使用较少。当前实�
 
 #### `accumulated_token_usage`
 
-出现在 BATCH 或独立 SET 事件中，代表当前已消耗的 token 总数（注意：不是本次响应的完整数量，而是累积值）。当前未作为 `usage` 返回给客户端（`server.py` 的 `usage` 字段硬编码为 `-1`）。
+出现在 BATCH 或独立 SET 事件中，代表当前已消耗的 token 总数（注意：不是本次响应的完整数量，而是累积值）。当前不直接用作客户端 usage；OpenAI 非流式使用本地文字估算，Anthropic usage 仍为 -1。
 
 #### `quasi_status`
 
@@ -1085,7 +1054,7 @@ yield "data: [DONE]\n\n"
 | `parent_message_id` | int/null | null/上一条 id | null/上一条 id | 上一条消息的 ID，首条为 null；多轮由 `SESSION_CACHE` 回传（§5.4） |
 | `model_type` | string | `"default"` | `"default"` | **协议字段**：上游一律改写为 `"default"`，不再表达能力（§7.6） |
 | `prompt` | string | 必填 | 必填 | 拼接后的纯文本 prompt（可能是增量尾部，§5.6） |
-| `ref_file_ids` | list | `[]` | `[]` | 文件引用 ID，始终为空（不支持文件上传） |
+| `ref_file_ids` | list | 本轮图片 ID 或 `[]` | 本轮图片 ID 或 `[]` | 由共享准备层生成，保持附件顺序 |
 | `stream` | bool | 按需 | 按需 | 服务端 SSE 流式开关 |
 | `thinking_enabled` | bool | 由 `MODEL_ROUTES`/THINKING 决定 | 由 `MODEL_ROUTES`/THINKING 决定 | 启用推理过程输出 |
 | `search_enabled` | bool | 由 SEARCH/客户端决定 | 由 SEARCH/客户端决定 | 启用联网搜索 |
@@ -1108,10 +1077,7 @@ yield "data: [DONE]\n\n"
 
 #### `ref_file_ids` 字段
 
-DeepSeek Chat 网页版支持上传文件（如图片、PDF），上传后文件会获得一个 ID，通过此字段附加到对话中。当前适配器不支持文件上传，因此始终传空数组。如需要实现，需要：
-1. 额外端点：文件上传 → 获取 file_id
-2. 将 file_id 传入 `ref_file_ids`
-3. 清理服务端的文件关联
+静态 JPEG/PNG/WebP 通过 `deepseek_files.py` 上传；使用 target_path=/api/v0/file/upload_file 的独立 PoW，multipart 字段 file。通过 `GET /api/v0/file/fetch_files` 的重复 file_ids 参数轮询至 SUCCESS，随后把图片 ID 传入 completion。上传和聊天使用同一账号；当前不提供 PDF 或公开文件管理/删除 API。续聊只发送本轮相关引用，新会话重试保留可用历史引用。
 
 #### `search_enabled` 行为
 
@@ -1131,13 +1097,15 @@ DeepSeek Chat 网页版支持上传文件（如图片、PDF），上传后文件
 
 > 本节回答一个问题：**客户端发的每个字段，最终以什么形态、什么值打到 `chat.deepseek.com` 上游**。所有信息对应 `adapter.py` 实际代码（请求体构造、`_base_headers`）。
 
-#### 上游三个端点（BASE_URL = `https://chat.deepseek.com`）
+#### 上游端点（BASE_URL = `https://chat.deepseek.com`）
 
 | 端点 | 用途 | 请求体 |
 |------|------|--------|
 | `POST /api/v0/chat/create_pow_challenge` | 获取 PoW 挑战 | `{"target_path": "/api/v0/chat/completion"}` |
 | `POST /api/v0/chat_session/create` | 创建会话 | `{"target_path": "/api/v0/chat/completion"}` |
 | `POST /api/v0/chat/completion` | 对话（流式/非流式共用） | 见下 |
+| `POST /api/v0/file/upload_file` | 上传静态图片 | multipart file，独立上传 PoW |
+| `GET /api/v0/file/fetch_files` | 查询处理状态 | 重复 file_ids query 参数 |
 
 #### `/api/v0/chat/completion` 请求体（adapter 实际发送，逐字段）
 
@@ -1147,7 +1115,7 @@ DeepSeek Chat 网页版支持上传文件（如图片、PDF），上传后文件
 | `parent_message_id` | server 会话缓存（`SESSION_CACHE`）优先，adapter `_msg_counters` 兜底 | 首条 `null`；多轮由 `record_message_id()` 从 `event: ready` 写回 |
 | `model_type` | 固定 `DEFAULT_MODEL_TYPE`（`"default"`），除非 `MODEL_ROUTES` 的 dict 形式显式指定 | **协议字段**：上游一律改写为 `"default"`，不再表达能力（§7.6） |
 | `prompt` | server `_build_prompt()`（经 `prepare_prompt()` 增量/整段裁决） | 客户端 messages 拼接后的纯文本，可能是新增尾部（§5.6） |
-| `ref_file_ids` | 固定 `[]` | 不支持文件上传 |
+| `ref_file_ids` | `PreparedTurn.ref_file_ids` | 同账号上传成功的本轮图片引用；无图为 `[]` |
 | `stream` | server 层 `req.stream` | `true`=SSE 流式 / `false`=一次性返回 |
 | `thinking_enabled` | `resolve_model_controls()`（MODEL_ROUTES/THINKING/客户端/旧 MODE） | **当前唯一的能力开关** |
 | `search_enabled` | server 决策（SEARCH/客户端） | 联网搜索开关 |
@@ -1159,7 +1127,7 @@ DeepSeek Chat 网页版支持上传文件（如图片、PDF），上传后文件
 |----|----|
 | `User-Agent` / `Sec-Ch-Ua` / `Sec-Ch-Ua-Mobile` / `Sec-Ch-Ua-Platform` | Chrome 指纹（`DEEPSEEK_IMPERSONATE` 关联 curl_cffi 指纹） |
 | `Accept` / `Accept-Encoding` / `Accept-Language` | 浏览器风格（`gzip, deflate, br, zstd` / `zh-CN,...`） |
-| `Content-Type` | `application/json` |
+| `Content-Type` | JSON 请求为 `application/json`；文件上传由 multipart 自动生成 boundary |
 | `Authorization` | `Bearer <DeepSeek token>`（账号凭证） |
 | `Origin` / `Referer` | `https://chat.deepseek.com/` |
 | `Priority` | `u=1, i` |
@@ -1828,7 +1796,7 @@ def _extract_text(content) -> str:
     return " ".join(p.text for p in content if p.type == "text" and p.text)
 ```
 
-当前只支持 `type: "text"` 的 ContentPart。不支持图片、文件等多模态内容（DeepSeek Chat 网页版本身不支持）。
+OpenAI 用户消息支持 text 和 image_url；Anthropic 用户消息支持 image.source，包括 tool_result 内嵌图片。路由先调用 normalize_images，把图片转换为有序文字标记与 ImageAttachment，再交给原文本/工具提示构建器。图片类型、限额和错误见 README；system/assistant 图片不支持。
 
 ### 12.2 Pydantic 模型
 
@@ -1836,6 +1804,7 @@ def _extract_text(content) -> str:
 class ContentPart(BaseModel):
     type: str
     text: Optional[str] = None
+    image_url: Optional[dict] = None
 ```
 
 ---
@@ -1984,25 +1953,11 @@ print("WASM valid")
 - 更新 WASM 后需检查导出函数名是否变化
 - 如果 `wasm_solve` 等导出函数不可用，需要同步更新 `_WASMSolver` 类
 
-### 14.5 httpx 客户端配置
+### 14.5 上游客户端配置
 
-```python
-self._client = httpx.Client(timeout=120)
-```
+DeepSeek 上游使用 `curl_cffi.requests.Session`，默认 impersonate=chrome131、timeout=120，并使用账号的可选 proxy。非流式 completion 使用独立 Session；流式、文件上传、状态查询使用账号客户端。不要将该设置解释为整轮含 PoW、重试、排队及文件处理的总时限。
 
-| 配置项 | 值 | 说明 |
-|--------|------|------|
-| `timeout` | 120s | 含连接、读取、写入总超时 |
-| 连接池 | 默认 (10) | httpx 默认连接池限制 |
-| Keep-Alive | 默认启用 | 复用 HTTP 连接 |
-
-**120s 超时的选择理由：**
-- 开启思考后的 THINK 阶段可能持续 30-60s，需要足够等待时间
-- DeepSeek 服务端在长时间思考期间不会发送数据，短超时会误断连
-- 网页版实际超时约 180s，120s 是保守值
-- `timeout=120` 是所有子超时的总上限（connect/read/write/pool）
-
-如果使用短超时（如默认的 5s），开启思考的请求会在 THINK 阶段频繁断连，表现为 `Server disconnected without sending a response`。
+图片源 URL 使用独立的标准库 HTTP(S) 连接，不携带 DeepSeek 凭证或环境代理，校验每次 DNS/重定向并固定连接目标；默认 IMAGE_DOWNLOAD_TIMEOUT=15。上传 HTTP 请求及处理轮询分别使用 IMAGE_PROCESSING_TIMEOUT=60，PoW 与聊天另计。
 
 ### 14.6 端口管理与进程控制
 
@@ -2410,25 +2365,13 @@ yield "data: [DONE]\n\n"
 | `tool_choice` 不可靠 | 提示词注入方案限制 | 模型可能选择不调用工具 |
 | `max_tokens` 无效 | DeepSeek API 不支持 | 超长回复需自行截断 |
 | `temperature`/`top_p` 无效 | DeepSeek API 不支持 | 无法控制随机性 |
-| 无多模态 | 网页 API 不支持图片 | 仅文本交互 |
-| 非流式 OpenAI 端点不输出 reasoning_content | OpenAI 非流式响应模型未包含该字段 | 需要推理过程请用流式模式（Anthropic 非流式已支持 thinking 块） |
+| 图片输入边界 | 仅静态 JPEG/PNG/WebP | 不支持动画、PDF、音视频及 Files API ID；公网 URL 需真实公网 DNS |
+| 用量估算 | OpenAI 非流式按本地文字计数，Anthropic usage=-1 | 无准确视觉 token 或上游计费值；思考正文两种输出模式均可返回 |
 | 上游偶尔只回 THINK 片段就结束（2026-10-18 实测） | 上游行为 | content 为空但 inish_reason 正常（stop）；客户端可能显示空回复，重试或改用直接回答 |
 
 ### 18.3 CORS 跨域支持
 
-项目使用 FastAPI 的 `CORSMiddleware` 处理跨域请求。配置位于 `server.py`：
-
-```python
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-```
-
-**默认允许所有来源、方法和请求头。** 这解决了浏览器插件（如 YouTube 字幕翻译等 Chrome 扩展）在使用 OpenAI 兼容接口时因 CORS 预检请求（`OPTIONS`）失败的问题。如果部署在需要限制跨域访问的环境，可相应收紧 `allow_origins` 等参数。
+默认 ALLOWED_ORIGINS 为空，采用同源策略，不安装 CORS 中间件。设置逗号分隔的来源列表后才安装 CORSMiddleware，允许这些来源的所有方法/请求头；ALLOW_CORS_CREDENTIALS 默认 false。插件 OPTIONS 失败时应配置真实 origin 后重启，不要假设默认允许所有来源。
 
 ### 18.4 稳定性
 
@@ -2524,8 +2467,13 @@ MODEL_ROUTES = os.environ.get("MODEL_ROUTES", "")           # model 名 → 能�
 ### 19.1 测试 PoW 和基本连接
 
 ```python
-from adapter import DeepSeekAdapter, TOKEN, COOKIES
-adapter = DeepSeekAdapter(token=TOKEN, cookies=COOKIES)
+from account_pool import AccountPool
+pool = AccountPool()
+account = pool.acquire()
+if account is None:
+    raise RuntimeError("请先在账号池配置有效账号")
+adapter = account.adapter
+# 独立诊断结束时调用 pool.release(account)；不要打印账号凭证
 sid = adapter.create_session()
 print(f"Session: {sid}")
 ```
@@ -2535,14 +2483,14 @@ print(f"Session: {sid}")
 ### 19.2 测试直接回答（快速模式）
 
 ```python
-content = adapter.chat(sid, "User: 你好")
+content, thinking = adapter.chat(sid, "User: 你好")
 print(f"Reply: {content}")
 ```
 
 ### 19.3 测试开启思考（原「专家模式」）
 
 ```python
-content = adapter.chat(sid, "User: 思考一个哲学问题",
+content, thinking = adapter.chat(sid, "User: 思考一个哲学问题",
                         thinking_enabled=True, search_enabled=False)
 print(f"Reply: {content}")
 ```
@@ -2628,11 +2576,11 @@ curl -X POST http://localhost:8080/v1/chat/completions ^
 
 | 错误信息 | 可能原因 | 解决 |
 |---------|---------|------|
-| `Authorization Failed (invalid token)` | Token 过期 | 更新 .env |
+| `Authorization Failed (invalid token)` | Token 过期 | 更新账号池或 data/accounts.json |
 | `Update to the latest version to use Expert`（历史） | 旧 `X-App-Version` 过低；该头自 v3.2.0 起已不再发送 | 当前版本判断基于 `X-Client-Version`（2.3.0，见 §7.7）；该 toast 已由 adapter 解析并透出 |
 | `WASM solver found no solution` | PoW 难度过高/求解异常 | 重试 |
 | `Session creation failed` | PoW 过期/凭证无效 | 重试/更新凭证 |
-| `Server disconnected without sending a response` | DeepSeek 服务端超时或 httpx 超时太短 | 检查 timeout=120；重试 |
+| `Server disconnected without sending a response` | DeepSeek 服务端超时或上游连接异常 | 检查 timeout=120；重试 |
 | `data: {"type":"error","content":"..."}` | DeepSeek 业务错误 | 根据 content 排查 |
 | 修改代码后行为不变 | `__pycache__` 陈旧缓存 | 删除 `__pycache__` 目录 |
 | `ImportError: cannot import name 'X' from 'adapter'` | 模块缓存旧版本 | 删除 `__pycache__` 后重启 |
@@ -2726,18 +2674,26 @@ print('has memory:', 'memory' in exports)
 
 # 步骤 4: 测试 PoW 求解
 python -c "
-from adapter import DeepSeekAdapter, TOKEN, COOKIES
-a = DeepSeekAdapter(token=TOKEN, cookies=COOKIES)
+from account_pool import AccountPool
+pool = AccountPool()
+account = pool.acquire()
+assert account is not None, '请先配置账号池'
+a = account.adapter
+# 诊断结束后 pool.release(account)
 c = a._get_challenge()
 print('Challenge solved')
 "
 
 # 步骤 5: 测试完整对话
 python -c "
-from adapter import DeepSeekAdapter, TOKEN, COOKIES
-a = DeepSeekAdapter(token=TOKEN, cookies=COOKIES)
+from account_pool import AccountPool
+pool = AccountPool()
+account = pool.acquire()
+assert account is not None, '请先配置账号池'
+a = account.adapter
+# 诊断结束后 pool.release(account)
 sid = a.create_session()
-r = a.chat(sid, 'User: 你好')
+r, thinking = a.chat(sid, 'User: 你好')
 print('Reply:', r[:100])
 "
 ```
@@ -2756,7 +2712,7 @@ if new_hash != old_hash:
 
 ---
 
-> 本文档最后更新：2026-08-08
-> 基于 `chat.deepseek.com` HAR 抓包分析（2026-05-06）
+> 本文档最后核对：2026-10-26（多模态接入及当前行为；历史发布记录保留原时点）
+> 协议依据包括历史 HAR，以及 2026-10-26 的上传/识图与下游实时验收
 > WASM 引擎版本：`sha3_wasm_bg.wasm`（DeepSeek 前端提取，含 `__wbindgen_export_0` malloc / `__wbindgen_export_1` realloc / `__wbindgen_export_2` free）
-> 协议版本：DeepSeek Chat v2.0.0 (X-Client-Version)
+> 当前适配器 X-Client-Version=2.3.0；2026-10-26 网页 HAR 为 2.7.0，当前适配器头实测可用

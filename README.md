@@ -11,6 +11,7 @@
 ## 功能特性
 
 - **OpenAI 兼容** — `/v1/chat/completions` 与 `/v1/models` 接口，支持 `stream` 模式
+- **图片输入** — 两种协议均支持 JPEG / PNG / WebP、base64 / data URL / 公网 HTTP(S) URL，流式与非流式共用上传处理
 - **Anthropic 兼容** — `/v1/messages` 接口，支持 Claude API 格式
 - **API Key 鉴权** — `/v1/*` 支持 `Authorization: Bearer` / `x-api-key`，适合公网部署
 - **思维链（Reasoning/Thinking）** — 开启 `thinking_mode` 后自动分离思维链 tokens 并通过 `reasoning_content` 字段输出
@@ -235,9 +236,9 @@ OpenAI 兼容的聊天补全接口。
 | `model` | `string` | `"deepseek-chat"` | 本代理只有一个模型，此字段不影响上游模型；老名字（`deepseek-reasoner` 等）作为别名照常接受。是否思考看 `thinking_mode` 或服务端 `THINKING` |
 | `messages` | `array` | 必填 | 消息列表，支持 `system`/`user`/`assistant`/`tool` 角色 |
 | `stream` | `boolean` | `false` | 是否流式输出 |
-| `temperature` | `float` | `null` | 采样温度（传递给 DeepSeek 但效果取决于服务端） |
-| `top_p` | `float` | `null` | Top-p 采样 |
-| `max_tokens` | `int` | `null` | 最大生成 tokens |
+| `temperature` | `float` | `null` | 兼容字段；当前忽略，不转发上游 |
+| `top_p` | `float` | `null` | 兼容字段；当前忽略，不转发上游 |
+| `max_tokens` | `int` | `null` | 兼容字段；当前忽略，不截断输出 |
 | `thinking_mode` | `boolean` | `false` | 开启深度推理（上游 `thinking_enabled`，即原「专家模式」） |
 | `search_enabled` | `boolean` | `false` | 开启联网搜索增强 |
 | `user` | `string` | `null` | 多轮会话标识（与 `X-Conversation-Id` 二选一，见「多轮对话」） |
@@ -261,14 +262,14 @@ OpenAI 兼容的聊天补全接口。
     "finish_reason": "stop"
   }],
   "usage": {
-    "prompt_tokens": -1,
-    "completion_tokens": -1,
-    "total_tokens": -1
+    "prompt_tokens": 10,
+    "completion_tokens": 15,
+    "total_tokens": 25
   }
 }
 ```
 
-> **注意**: `usage` 中的 tokens 数返回 `-1`，因为 DeepSeek Chat 不暴露 token 计数。这是已知限制。
+> **注意**：以上数值仅展示响应结构。OpenAI 非流式 usage 按拼接后的文字 prompt 与可见正文在本地估算，不是上游计费值，也不包含准确的视觉 token。流式块不附带 usage；Anthropic usage 仍返回 `-1`。
 
 #### 流式响应（`stream: true`）
 
@@ -587,7 +588,7 @@ Retry-After: 47
 
 ## 使用量统计（v2.2.0）
 
-`usage` 字段从 v2.1 的硬编码 `-1` 升级为真实 token 数。优先使用 `tiktoken` 的 `cl100k_base` 编码（与 DeepSeek 兼容），未安装时回退到字符启发式（CJK 1 token/字，ASCII 约 1 token/4 字符）。
+OpenAI 非流式 `usage` 使用 `tiktoken` / `cl100k_base` 在本地估算文字，无法加载时回退到字符启发式，不是 DeepSeek 计费值。响应统计拼接后的 prompt 和可见正文；内部 OpenAI 统计还可包含推理。流式响应不发送 usage 块，Anthropic 的 `input_tokens` / `output_tokens` 仍为 `-1`。图片只贡献文字标记，不提供准确的视觉 token。
 
 服务端面板的 `/admin/api/stats` 现在还返回：
 
@@ -743,7 +744,7 @@ Retry-After: 47
 
 1. 等待模型完成推理（响应尚未结束）
 2. 上游偶尔只回 THINK 片段就结束（实测可复现），此时 `content` 为空但 `finish_reason` 正常，属上游行为，重试即可
-3. 如果真是 bug：确认服务端版本，检查 `finish_reason` 是否正常输出。已知旧版本可能缺少 `finish_reason: "stop"` 帧
+3. 旧版本还可能漏掉 RESPONSE 片段首帧自带的短答案；当前解析器已修复。若仍有问题，检查上游是否实际发送正文，以及客户端是否正确处理 `finish_reason: "stop"`
 
 ### Q: 如何关闭思维链/推理展示？
 
@@ -803,15 +804,15 @@ python -m uvicorn server:app --host 0.0.0.0 --port 8080
 
 某些 Chrome 插件在使用 OpenAI 兼容接口前会先发送 `OPTIONS` 预检请求（CORS preflight）来检查服务器是否允许跨域访问。如果服务端未处理 `OPTIONS` 请求，会返回 `405 Method Not Allowed`，导致插件无法正常使用。
 
-**解决方法：** 本项目已内置 CORS 中间件（`CORSMiddleware`），默认允许所有来源、方法和请求头。如果仍遇到跨域问题，请确认版本已包含 `server.py` 中的 CORS 配置。
+**解决方法：** 将插件/客户端的 origin 加入 `ALLOWED_ORIGINS` 后重启。默认列表为空，采用同源策略，不安装 CORS 中间件。配置来源后允许所有方法和请求头；若需带凭证跨域，另设 `ALLOW_CORS_CREDENTIALS=true`。
 
 ### Q: 支持多轮对话吗？
 
-不支持。每次请求都是独立的，服务器会创建新的 DeepSeek Chat 会话。多轮会话支持需要在应用层面（如 NextChat）维护上下文。
+支持。客户端发送完整消息历史可重建上下文；使用 `X-Conversation-Id`、OpenAI 顶层 `user` 或 Anthropic `metadata.user_id`，还可复用调用方隔离、账号绑定的上游会话。无显式标识时每次新建会话。只发送最新消息的客户端依赖已有 parent 链，链无法复用时应重发完整文字和图片。
 
 ### Q: 如何查看 PoW 求解过程和调试信息？
 
-适配器使用 `httpx` 发送请求，设置日志级别可查看详细请求/响应：
+上游请求使用 `curl_cffi`。设置 `LOG_LEVEL=DEBUG` 可查看项目诊断日志，不代表会输出原始请求/响应；诊断时不要打印 token、cookies 或签名图片 URL：
 
 ```python
 import logging
@@ -820,7 +821,7 @@ logging.basicConfig(level=logging.DEBUG)
 
 ### Q: Token/凭证多久过期？
 
-DeepSeek 的 Token 有效期不明确。如果遇到 `401` 或 `403` 响应，重新登录 chat.deepseek.com 并更新 `.env` 中的凭证。
+DeepSeek 的 Token 有效期不明确。认证失败可能是 HTTP 401/403，也可能是 HTTP 200 加业务码 40003。重新登录后，在 WebUI 账号池或 `data/accounts.json` 更新凭证；账号凭证不从 `.env` 读取。
 
 ---
 
@@ -866,7 +867,7 @@ DeepSeek 的 Token 有效期不明确。如果遇到 `401` 或 `403` 响应，�
 | `ENABLE_RATE_LIMIT` | `true` | 客户端限流总开关 |
 | `CLIENT_RPM_PER_KEY` | `60` | 每 API key 每分钟请求数 |
 | `CLIENT_RPM_PER_IP` | `120` | 每 IP 每分钟请求数 |
-| `SESSION_CACHE_TTL` | `600` | 多轮会话缓存 TTL（秒），0 = 禁用多轮 |
+| `SESSION_CACHE_TTL` | `1800` | 多轮会话缓存 TTL（秒），0 = 禁用多轮 |
 
 ### 安全 & 加密
 
@@ -884,7 +885,7 @@ DeepSeek 的 Token 有效期不明确。如果遇到 `401` 或 `403` 响应，�
 | `LOG_LEVEL` | `INFO` | DEBUG/INFO/WARNING/ERROR |
 | `LOG_FORMAT` | `json` | `json`（生产）或 `text`（开发） |
 | `DEEPSEEK_IMPERSONATE` | `chrome131` | curl_cffi TLS 指纹 profile |
-| `DEEPSEEK_JITTER_SECS` | `0.0` | 调用间随机抖动（秒） |
+| `DEEPSEEK_JITTER_SECS` | `0.4` | 调用间随机抖动（秒） |
 | `DSML_MAX_BUFFER_BYTES` | `1048576` | StreamSieve 捕获缓冲上限 |
 | `DISABLE_AUTO_RECOVER` | `false` | 设为 true 禁用账号自动恢复 |
 
@@ -892,13 +893,21 @@ DeepSeek 的 Token 有效期不明确。如果遇到 `401` 或 `403` 响应，�
 
 ## 依赖
 
+以 `requirements.txt` 为安装依据，最低版本如下：
+
 | 包 | 最低版本 | 用途 |
-|----|----------|------|
-| `fastapi` | ≥0.100.0 | Web 框架 |
-| `uvicorn` | ≥0.20.0 | ASGI 服务器 |
-| `httpx` | ≥0.24.0 | HTTP 客户端（用于调用 DeepSeek API） |
-| `wasmtime` | ≥14.0.0 | WASM 运行时（PoW 求解） |
-| `python-dotenv` | ≥1.0.0 | `.env` 文件加载 |
+| --- | --- | --- |
+| `fastapi` | ≥0.115.0 | Web 框架 |
+| `uvicorn` | ≥0.30.0 | ASGI 服务器 |
+| `curl_cffi` | ≥0.7.1 | DeepSeek 上游 HTTP 客户端 |
+| `wasmtime` | ≥15.0.0 | PoW WASM 运行时 |
+| `python-dotenv` | ≥1.0.0 | 运行配置加载 |
+| `Pillow` | ≥10.4.0 | 图片格式与像素校验 |
+| `httpx2` | ≥2.0.0 | 测试传输兼容 |
+| `httpx` | ≥0.27.0 | 测试传输兼容 |
+| `cryptography` | ≥42.0.0 | 账号凭证加密 |
+| `tiktoken` | ≥0.7.0 | 本地文字 token 估算 |
+| `pytest` | ≥8.0.0 | 离线测试 |
 
 ---
 
@@ -915,6 +924,55 @@ This is free and unencumbered software released into the public domain.
 **不提供任何保证**，不保证服务的可用性、准确性、稳定性。使用本项目所产生的任何后果由使用者自行承担。
 
 ---
+
+## 图片输入与多模态
+
+使用已有 `deepseek-chat` 模型即可，无需切换到 `vision`。图片使用本次选定的账号上传，等待处理成功后再提交聊天；`stream=true` 也会先完成这一步。
+
+OpenAI `/v1/chat/completions`：
+
+```json
+{
+  "model": "deepseek-chat",
+  "stream": false,
+  "messages": [{"role": "user", "content": [
+    {"type": "text", "text": "描述这张图片"},
+    {"type": "image_url", "image_url": {"url": "data:image/png;base64,<图片base64>"}}
+  ]}]
+}
+```
+
+Anthropic `/v1/messages`：
+
+```json
+{
+  "model": "deepseek-chat",
+  "max_tokens": 1024,
+  "messages": [{"role": "user", "content": [
+    {"type": "text", "text": "描述这张图片"},
+    {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "<图片base64>"}}
+  ]}]
+}
+```
+
+OpenAI 的 `image_url.url` 也可使用公网 HTTP(S) 图片地址；Anthropic 对应 `{"type":"image","source":{"type":"url","url":"https://公开地址/image.png"}}`。Anthropic 用户消息内的 `tool_result.content` 支持嵌套图片。system/assistant 图片、动画图、PDF、音视频和 Files API 文件 ID 不在支持范围。OpenAI `detail` 不映射为上游参数。
+
+远程图片下载不携带 DeepSeek 凭证、不使用环境代理，只允许解析到公网 IP 的 HTTP(S) 地址和 80/443 端口，并对每次重定向重新检查。内网图片请由调用方读取后发送 base64。
+使用 fake-IP DNS 的代理环境可能将公网域名解析为 `198.18.0.0/15` 等非公网地址，此时 URL 输入会返回 400。请为图片域名使用真实公网 DNS，或发送 base64；程序不会绕过地址校验。
+
+| 环境变量 | 默认值 | 含义 |
+| --- | --- | --- |
+| `IMAGE_MAX_IMAGES` | `8` | 请求图片部件数量，含历史和工具结果 |
+| `IMAGE_MAX_BYTES` | `10485760` | 单图解码后文件字节数（10 MiB） |
+| `IMAGE_MAX_TOTAL_BYTES` | `33554432` | 请求内全部图片文件字节数（32 MiB） |
+| `IMAGE_MAX_REQUEST_BYTES` | `41943040` | 两个聊天入口 JSON 请求体上限（40 MiB） |
+| `IMAGE_MAX_PIXELS` | `25000000` | 单图像素上限 |
+| `IMAGE_DOWNLOAD_TIMEOUT` | `15` | 单图远程下载限制，秒 |
+| `IMAGE_PROCESSING_TIMEOUT` | `60` | 每次上传 HTTP 请求/批量处理轮询各自的超时，秒；不包含 PoW 和聊天 |
+
+这些是本服务的资源策略，不是上游最大能力声明。每个会话最多缓存 64 个文件引用，与调用方、账号及凭证绑定，随会话 TTL 过期；不在磁盘持久化图片。使用显式会话标识（如 `X-Conversation-Id`）可复用引用。客户端仍应保留原图以便重建历史。历史比较包含图片哈希，重试换会话保留可用图片引用。
+
+无法解码/损坏的图片返回 400、不支持格式 415、超限 413、文件服务限流 429、上游文件失败 502、处理轮询超时 504。请求结构不符合 schema 时可能返回 FastAPI 的 422 校验错误。图片输入错误不会把账号池标记为失效。OpenAI 非流式 `usage` 是文字与附件标记的估算；Anthropic usage 仍为 `-1`，两者均不提供准确的视觉 token 统计。
 
 ## 致谢
 

@@ -3,6 +3,7 @@ uvicorn>=0.30.0
 curl_cffi>=0.7.1
 wasmtime>=15.0.0
 python-dotenv>=1.0.0
+Pillow>=10.4.0
 
 # Test client transport: starlette 0.40+ / FastAPI 0.110+ moved the
 # TestClient onto the `httpx2` fork. Install it explicitly so the

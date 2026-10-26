@@ -60,19 +60,7 @@ jobs:
 
       - name: Run unit tests
         run: |
-          python -m pytest tests/test_sieve.py \
-                          tests/test_dsml.py \
-                          tests/test_token_counter.py \
-                          tests/test_session_cache.py \
-                          tests/test_session_binding.py \
-                          tests/test_anthropic_server.py \
-                          tests/test_model_router.py \
-                          tests/test_rate_limiter.py \
-                          tests/test_ip_utils.py \
-                          tests/test_adapter.py \
-                          tests/test_account_pool.py \
-                          tests/test_api_keys.py \
-                          -v --tb=short
+          python -m pytest tests -v --tb=short
 
   e2e:
     name: End-to-end validation

@@ -31,6 +31,7 @@ class AnthropicToolDef(BaseModel):
 
 class ContentBlock(BaseModel):
     type: str
+    source: Optional[dict] = None
     text: Optional[str] = None
     id: Optional[str] = None
     name: Optional[str] = None

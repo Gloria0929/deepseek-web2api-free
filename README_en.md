@@ -11,6 +11,7 @@
 ## Features
 
 - **OpenAI-compatible** — `/v1/chat/completions` and `/v1/models` endpoints, supports `stream` mode.
+- **Image input** — static JPEG/PNG/WebP for both protocols and output modes; base64/data URL and public HTTP(S) URL sources.
 - **Anthropic-compatible** — `/v1/messages` endpoint, supports Claude API format.
 - **API key auth** — `/v1/*` supports `Authorization: Bearer` / `x-api-key`, suitable for public deployment.
 - **Chain of thought (Reasoning/Thinking)** — with thinking enabled, reasoning tokens are automatically separated and exposed via the `reasoning_content` field.
@@ -234,9 +235,9 @@ OpenAI-compatible chat completion endpoint.
 | `model` | `string` | `"deepseek-chat"` | This proxy serves one model only, and this field does not select an upstream model; legacy names (`deepseek-reasoner`, etc.) are still accepted as aliases. Whether the model thinks is decided by `thinking_mode` or the server-side `THINKING` |
 | `messages` | `array` | required | Message list, supports `system`/`user`/`assistant`/`tool` roles |
 | `stream` | `boolean` | `false` | Whether to stream output |
-| `temperature` | `float` | `null` | Sampling temperature (passed to DeepSeek but effect depends on the server) |
-| `top_p` | `float` | `null` | Top-p sampling |
-| `max_tokens` | `int` | `null` | Maximum generated tokens |
+| `temperature` | `float` | `null` | Accepted for compatibility; currently ignored and not forwarded |
+| `top_p` | `float` | `null` | Accepted for compatibility; currently ignored and not forwarded |
+| `max_tokens` | `int` | `null` | Accepted for compatibility; currently ignored, without output truncation |
 | `thinking_mode` | `boolean` | `false` | enable deep reasoning (upstream `thinking_enabled`, the former expert mode) |
 | `search_enabled` | `boolean` | `false` | Enable web search enhancement |
 | `tools` | `array` | `null` | OpenAI-format tool definitions |
@@ -259,14 +260,14 @@ OpenAI-compatible chat completion endpoint.
     "finish_reason": "stop"
   }],
   "usage": {
-    "prompt_tokens": -1,
-    "completion_tokens": -1,
-    "total_tokens": -1
+    "prompt_tokens": 10,
+    "completion_tokens": 15,
+    "total_tokens": 25
   }
 }
 ```
 
-> **Note**: token counts in `usage` return `-1` because DeepSeek Chat does not expose token counts. This is a known limitation.
+> **Note**: the numbers above only illustrate the response shape. OpenAI non-streaming usage is estimated locally from the assembled text prompt and visible answer; it is not an upstream token count and excludes accurate visual-token accounting. Streaming chunks do not include usage. Anthropic usage still returns `-1`.
 
 #### Streaming response (`stream: true`)
 
@@ -584,7 +585,7 @@ Retry-After: 47
 
 ## Usage statistics (v2.2.0)
 
-The `usage` field was upgraded from the hardcoded `-1` in v2.1 to real token counts. It prefers `tiktoken`'s `cl100k_base` encoding (DeepSeek-compatible), and falls back to a character heuristic (CJK 1 token/char, ASCII ~1 token/4 chars) when tiktoken is not installed.
+OpenAI non-streaming `usage` contains local text estimates using `tiktoken` / `cl100k_base`, with a character heuristic fallback. These are not DeepSeek billing counts. The response counts the assembled prompt and visible answer; internal OpenAI statistics can also count reasoning. Streaming responses do not emit a usage chunk, and Anthropic `input_tokens` / `output_tokens` remain `-1`. Images contribute text markers but no accurate visual-token count.
 
 The server panel's `/admin/api/stats` now also returns:
 
@@ -800,15 +801,15 @@ python -m uvicorn server:app --host 0.0.0.0 --port 8080
 
 Some Chrome extensions send an `OPTIONS` preflight request (CORS preflight) before using the OpenAI-compatible API to check whether the server allows cross-origin access. If the server does not handle `OPTIONS`, it returns `405 Method Not Allowed`, breaking the extension.
 
-**Solution:** this project ships a built-in CORS middleware (`CORSMiddleware`) allowing all origins, methods, and headers by default. If you still hit CORS issues, confirm the version includes the CORS config in `server.py`.
+**Solution:** set `ALLOWED_ORIGINS` to the extension/client origin and restart. With an empty list, the default is same-origin and CORS middleware is not installed. Configured origins allow all methods/headers; credentialed cross-origin requests additionally need `ALLOW_CORS_CREDENTIALS=true`.
 
 ### Q: Does it support multi-turn conversations?
 
-No. Each request is independent; the server creates a new DeepSeek Chat session. Multi-turn support needs to be maintained at the application level (e.g. NextChat) by keeping context.
+Yes. Send full message history to reconstruct context, and optionally use `X-Conversation-Id`, OpenAI `user`, or Anthropic `metadata.user_id` to reuse a caller-scoped, account-bound upstream session. Without an explicit identifier, each request creates a new session. Minimal latest-message-only clients depend on the existing parent chain; resend complete text/images if that chain cannot be reused.
 
 ### Q: How do I view the PoW solving process and debug info?
 
-The adapter uses `httpx` to send requests; set the log level to view detailed requests/responses:
+Upstream traffic uses `curl_cffi`. Set `LOG_LEVEL=DEBUG` for project diagnostics; this does not promise raw request/response logging. Avoid printing tokens, cookies or signed image URLs:
 
 ```python
 import logging
@@ -817,7 +818,7 @@ logging.basicConfig(level=logging.DEBUG)
 
 ### Q: How long do tokens/credentials last?
 
-DeepSeek's token validity is unclear. If you encounter `401` or `403` responses, re-log into chat.deepseek.com and update the credentials in `.env`.
+DeepSeek's token validity is unclear. Authentication can fail with HTTP 401/403 or HTTP 200 plus business code 40003. Re-login and update credentials in the WebUI account pool or `data/accounts.json`; account credentials are not read from `.env`.
 
 ---
 
@@ -863,7 +864,7 @@ Client API keys are managed in WebUI > Settings, and only hashes are stored in S
 | `ENABLE_RATE_LIMIT` | `true` | client rate-limit master switch |
 | `CLIENT_RPM_PER_KEY` | `60` | requests per minute per API key |
 | `CLIENT_RPM_PER_IP` | `120` | requests per minute per IP |
-| `SESSION_CACHE_TTL` | `600` | multi-turn session cache TTL (seconds), 0 = disable multi-turn |
+| `SESSION_CACHE_TTL` | `1800` | multi-turn session cache TTL (seconds), 0 = disable multi-turn |
 
 ### Security & encryption
 
@@ -881,7 +882,7 @@ Client API keys are managed in WebUI > Settings, and only hashes are stored in S
 | `LOG_LEVEL` | `INFO` | DEBUG/INFO/WARNING/ERROR |
 | `LOG_FORMAT` | `json` | `json` (production) or `text` (development) |
 | `DEEPSEEK_IMPERSONATE` | `chrome131` | curl_cffi TLS fingerprint profile |
-| `DEEPSEEK_JITTER_SECS` | `0.0` | random jitter between calls (seconds) |
+| `DEEPSEEK_JITTER_SECS` | `0.4` | random jitter between calls (seconds) |
 | `DSML_MAX_BUFFER_BYTES` | `1048576` | StreamSieve capture buffer cap |
 | `DISABLE_AUTO_RECOVER` | `false` | set true to disable account auto-recovery |
 
@@ -889,13 +890,21 @@ Client API keys are managed in WebUI > Settings, and only hashes are stored in S
 
 ## Dependencies
 
+Install `requirements.txt`; the declared minimum versions are:
+
 | Package | Minimum version | Purpose |
-|----|----------|----|
-| `fastapi` | ≥0.100.0 | Web framework |
-| `uvicorn` | ≥0.20.0 | ASGI server |
-| `httpx` | ≥0.24.0 | HTTP client (for calling the DeepSeek API) |
-| `wasmtime` | ≥14.0.0 | WASM runtime (PoW solving) |
-| `python-dotenv` | ≥1.0.0 | `.env` file loading |
+| --- | --- | --- |
+| `fastapi` | ≥0.115.0 | Web framework |
+| `uvicorn` | ≥0.30.0 | ASGI server |
+| `curl_cffi` | ≥0.7.1 | DeepSeek upstream transport |
+| `wasmtime` | ≥15.0.0 | PoW WASM runtime |
+| `python-dotenv` | ≥1.0.0 | Runtime configuration |
+| `Pillow` | ≥10.4.0 | Image validation |
+| `httpx2` | ≥2.0.0 | Test transport compatibility |
+| `httpx` | ≥0.27.0 | Test transport compatibility |
+| `cryptography` | ≥42.0.0 | Credential encryption |
+| `tiktoken` | ≥0.7.0 | Local text token estimates |
+| `pytest` | ≥8.0.0 | Offline tests |
 
 ---
 
@@ -912,6 +921,29 @@ You are free to copy, modify, publish, use, compile, sell, or distribute this so
 **This software is provided without any warranty**, without guarantee of service availability, accuracy, or stability. Any consequences arising from the use of this project are the sole responsibility of the user.
 
 ---
+
+## Image input
+
+Both `/v1/chat/completions` and `/v1/messages` accept static JPEG, PNG and WebP images in streaming and nonstreaming requests. Continue using `deepseek-chat`; a separate vision model is unnecessary. Upload and processing finish before the response stream starts.
+
+OpenAI user content accepts `{"type":"image_url","image_url":{"url":"data:image/png;base64,<base64>"}}` or a public HTTP(S) image URL. Anthropic user content accepts `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"<base64>"}}` or `{"type":"image","source":{"type":"url","url":"https://public.example/image.png"}}`. Nested images in Anthropic user `tool_result.content` are supported. Combine these blocks with text in attachment order.
+
+System/assistant images, animations, document/audio/video input and Files API IDs are unsupported. OpenAI `detail` has no upstream equivalent. Remote downloads carry no DeepSeek credentials and use no environment proxy. Every destination/redirect must resolve to public IPs; only HTTP(S) on ports 80/443 is allowed. Send local/private images as base64.
+Fake-IP DNS environments may resolve public hosts to non-global addresses such as `198.18.0.0/15`; URL input then returns 400. Use real public DNS for the image host or send base64. Address checks are not bypassed.
+
+| Environment setting | Default |
+| --- | --- |
+| `IMAGE_MAX_IMAGES` | 8 blocks per request, including history |
+| `IMAGE_MAX_BYTES` | 10485760 bytes per image |
+| `IMAGE_MAX_TOTAL_BYTES` | 33554432 image bytes per request |
+| `IMAGE_MAX_REQUEST_BYTES` | 41943040 JSON request bytes |
+| `IMAGE_MAX_PIXELS` | 25000000 pixels per image |
+| `IMAGE_DOWNLOAD_TIMEOUT` | 15 seconds per download |
+| `IMAGE_PROCESSING_TIMEOUT` | 60 seconds for each upload HTTP request / processing poll deadline; excludes PoW and completion |
+
+These are local resource policies, not upstream capacity claims. Up to 64 file references are kept per caller-scoped, account/credential-bound conversation and expire with its TTL. Image bytes are not persisted. Use an explicit conversation ID to reuse references and keep originals for history reconstruction. Image-aware history and fresh-session retries retain available references. OpenAI non-streaming usage remains a text/marker estimate; Anthropic usage remains `-1`. Neither reports accurate visual-token accounting.
+
+Invalid decoded image content returns 400, unsupported formats 415, exceeded limits 413, file-service throttling 429, upstream file failures 502 and processing poll timeouts 504. Request schema errors may return FastAPI validation errors (422). Image failures do not automatically mark credentials as invalid.
 
 ## Acknowledgments
 

@@ -31,7 +31,7 @@ import os
 import threading
 import time
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from logger import get_logger
@@ -98,6 +98,9 @@ class ChatSession:
     # the full prompt on the existing chain instead of abandoning the session;
     # this counter is telemetry for that path.
     diverged_turns: int = 0
+    # File references only: bounded, caller-scoped and bound to account_id.
+    image_files: dict[str, str] = field(default_factory=dict)
+    credential_fingerprint: str = ''
 
     def next_message_id(self) -> int:
         """Return the next ``parent_message_id`` and bump the counter."""
