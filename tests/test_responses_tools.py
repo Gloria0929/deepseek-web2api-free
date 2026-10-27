@@ -83,3 +83,36 @@ def test_pending_result_batch_requires_all_outputs_but_accepts_reverse_order():
         {'type':'function_call_output','call_id':'call-1','output':'second'},
         {'type':'function_call_output','call_id':'call-0','output':'first'}]), history)
     assert [m['tool_call_id'] for m in messages] == ['call-1','call-0']
+
+
+def test_referenced_annotation_objects_are_checked_as_reachable_schemas():
+    from responses_tools import validate_call_batch
+    schema = {'type':'object','properties':{'v':{'$ref':'#/default'}},'required':['v'],
+        'additionalProperties':False,'default':{'type':'object','properties':{'x':{'type':'string'}}}}
+    with pytest.raises(ResponseError): ResponsesRequest(input='x',tools=[tool(schema,strict=True)])
+    normalized = ResponsesRequest(input='x',tools=[tool(schema)])
+    target = normalized.tools[0]['parameters']['default']
+    assert target['additionalProperties'] is False and target['required'] == ['x']
+    with pytest.raises(ResponseError):
+        validate_call_batch(normalized.tools,'auto',[call(v={'unexpected':1})],parallel=False)
+    for target in ({'$ref':'https://example.invalid/schema'}, {'$ref':'#/missing'}, {'type':7}):
+        schema['default'] = target
+        with pytest.raises(ResponseError) as caught: ResponsesRequest(input='x',tools=[tool(schema)])
+        assert caught.value.status == 400
+
+
+def test_json_decodable_deep_schema_is_a_client_error():
+    schema = {'type':'string'}
+    for _ in range(600): schema = {'type':'array','items':schema}
+    body = json.loads(json.dumps({'input':'x','tools':[tool({'type':'object','properties':{'v':schema}})]}))
+    with pytest.raises(ResponseError) as caught: ResponsesRequest.model_validate(body)
+    assert caught.value.status == 400 and caught.value.param == 'tools[0].parameters'
+
+
+def test_recursive_local_schema_has_finite_traversal_and_validates_finite_data():
+    from responses_tools import validate_call_batch
+    schema={'type':'object','properties':{'tree':{'$ref':'#/$defs/node'}},'$defs':{'node':{
+        'type':'object','properties':{'next':{'anyOf':[{'type':'null'},{'$ref':'#/$defs/node'}]}}}}}
+    req=ResponsesRequest(input='x',tools=[tool(schema)])
+    validate_call_batch(req.tools,'auto',[call(tree={'next':None})],parallel=False)
+    with pytest.raises(ResponseError): validate_call_batch(req.tools,'auto',[call(tree={'bad':1})],parallel=False)

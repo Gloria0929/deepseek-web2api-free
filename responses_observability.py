@@ -25,7 +25,7 @@ class RequestTrace:
 
     def observe(self, observation):
         with self.lock:
-            if self.done or observation.stage not in _STAGES: return
+            if self.done or observation.stage not in _STAGES or observation.status not in ('completed','failed','cancelled'): return
             row = {'request_id':self.id, 'stage':observation.stage,
                    'elapsed_ms':round(max(0,observation.elapsed_ms),3), 'status':observation.status}
             if self.response_id: row['response_id'] = self.response_id

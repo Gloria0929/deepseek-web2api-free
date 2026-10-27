@@ -63,6 +63,9 @@ def test_actual_route_emits_safe_stages_and_survives_logging_failure(backend, mo
             'first_upstream_event','first_output_text','request'} <= {row['stage'] for row in rows}
     assert 'SECRET' not in json.dumps(rows)
     assert sum(row['stage'] == 'request' for row in rows) == 1
+    with TestClient(server.app) as http:
+        assert http.post('/v1/responses',json={'input':'x','unknown':'SECRET'}).status_code == 400
+    assert rows[-1]['status'] == 'failed' and rows[-1]['error_code'] == 'invalid_request_error'
     def broken(_): raise RuntimeError('SECRET')
     monkeypatch.setattr(responses_routes, 'RequestTrace', lambda request_id: RequestTrace(request_id,emit=broken))
     with TestClient(server.app) as http:

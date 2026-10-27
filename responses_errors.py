@@ -1,8 +1,10 @@
 """Explicit supported-subset errors without retaining request data."""
+from __future__ import annotations
+from typing import TYPE_CHECKING
 from image_inputs import ImageError
-from adapter import RateLimitError
-from fastapi import HTTPException
-from pydantic import ValidationError
+
+if TYPE_CHECKING:
+    from pydantic import ValidationError
 
 
 class ResponseError(ImageError):
@@ -34,6 +36,11 @@ def validation_error(error: ValidationError) -> ResponseError:
 
 
 def classify_error(error: Exception) -> ResponseError:
+    # HTTP/upstream classification is an adapter; importing the error type alone
+    # keeps schema policy independent of HTTP and upstream transports.
+    from adapter import RateLimitError
+    from fastapi import HTTPException
+    from pydantic import ValidationError
     if isinstance(error, ResponseError): return error
     if isinstance(error, ValidationError): return validation_error(error)
     if isinstance(error, RateLimitError):

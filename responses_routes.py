@@ -3,16 +3,15 @@ from contextlib import aclosing
 import json
 import time
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 from pydantic import ValidationError
 from starlette.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
-from adapter import RateLimitError
 from chat_service import ChatService
 from chat_types import ChatEvent
 from chat_runtime import AccountStreamingResponse, iterate_upstream, prepare_account, thread_step
-from image_inputs import ImageError, ImageLimits
+from image_inputs import ImageLimits
 from responses_errors import ResponseError, classify_error, validation_error
 from responses_format import (ResponsesRequest, normalize_input, identifier, validate_calls,
                               output_items, history_output, response_object)
@@ -27,12 +26,13 @@ public_error = classify_error
 def create_responses_router(*, store, acquire, authenticate, scope, controls, model, mark_error, record):
     router = APIRouter()
 
-    async def dispatch(request, operation):
+    async def dispatch(request, operation, trace=None):
         try:
             headers = authenticate(request)
             return await operation(headers)
         except Exception as error:
             error = public_error(error)
+            if trace is not None: trace.finish('failed',error.code)
             return JSONResponse(error.payload(), status_code=error.status)
 
     @router.get('/v1/responses/{response_id}')
@@ -140,7 +140,7 @@ def create_responses_router(*, store, acquire, authenticate, scope, controls, mo
             return AccountStreamingResponse(acquired, events(), media_type='text/event-stream',
                 headers={'Cache-Control':'no-cache', **headers}, on_close=lambda:trace.finish('cancelled'))
         try:
-            result = await dispatch(request, operation)
+            result = await dispatch(request, operation, trace)
             if not isinstance(result, AccountStreamingResponse):
                 trace.finish('failed' if result.status_code >= 400 else 'completed')
             return result

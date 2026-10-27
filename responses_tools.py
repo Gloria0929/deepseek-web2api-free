@@ -14,18 +14,42 @@ def json_arguments(value):
     return json.loads(value, parse_constant=invalid)
 
 
-def _nodes(schema, depth=0):
+def _pointer(root, ref):
+    if not isinstance(ref,str) or not ref.startswith('#/'):
+        raise ResponseError('Only local JSON Pointer references are supported', param='tools')
+    target = root
+    try:
+        for segment in ref[2:].split('/'):
+            if re.search(r'~(?![01])',segment): raise ValueError()
+            segment = segment.replace('~1','/').replace('~0','~')
+            if isinstance(target,list):
+                if not segment.isdecimal(): raise ValueError()
+                target = target[int(segment)]
+            else: target = target[segment]
+        if not isinstance(target,(dict,bool)): raise ValueError()
+    except (ValueError,KeyError,TypeError,IndexError):
+        raise ResponseError('Invalid local schema reference',param='tools') from None
+    return target
+
+
+def _nodes(schema, depth=0, *, root=None, seen=None):
     if depth > 64: raise ResponseError('Function schema is too deeply nested', param='tools')
     if not isinstance(schema, dict): return
+    if root is None: root = schema
+    if seen is None: seen = set()
+    if id(schema) in seen: return
+    seen.add(id(schema))
     yield schema
+    if '$ref' in schema:
+        yield from _nodes(_pointer(root,schema['$ref']),depth+1,root=root,seen=seen)
     for key in ('properties', '$defs', 'definitions', 'patternProperties', 'dependentSchemas'):
-        for value in schema.get(key, {}).values(): yield from _nodes(value, depth + 1)
+        for value in schema.get(key, {}).values(): yield from _nodes(value,depth+1,root=root,seen=seen)
     for key in ('items', 'additionalProperties', 'contains', 'not', 'if', 'then', 'else',
                 'propertyNames', 'unevaluatedProperties', 'unevaluatedItems'):
         value = schema.get(key)
-        if isinstance(value, dict): yield from _nodes(value, depth + 1)
+        if isinstance(value, dict): yield from _nodes(value,depth+1,root=root,seen=seen)
     for key in ('anyOf', 'oneOf', 'allOf', 'prefixItems'):
-        for value in schema.get(key, []): yield from _nodes(value, depth + 1)
+        for value in schema.get(key, []): yield from _nodes(value,depth+1,root=root,seen=seen)
 
 
 def _check_schema(schema, param):
@@ -34,22 +58,13 @@ def _check_schema(schema, param):
             raise ResponseError('Function schema is too large', 413, param=param)
         Draft202012Validator.check_schema(schema)
         for node in _nodes(schema):
+            Draft202012Validator.check_schema(node)
             # Resource scopes/dynamic resolution would change root pointer meaning.
             if any(k in node for k in ('$id', '$anchor', '$dynamicAnchor', '$dynamicRef')):
                 raise ResponseError('Schema resource scopes and dynamic references are unsupported', param=param)
-            if '$ref' in node:
-                ref = node['$ref']
-                if not isinstance(ref, str) or not ref.startswith('#/'):
-                    raise ResponseError('Only local JSON Pointer references are supported', param=param)
-                target = schema
-                for segment in ref[2:].split('/'):
-                    if re.search(r'~(?![01])', segment): raise ValueError()
-                    segment = segment.replace('~1', '/').replace('~0', '~')
-                    if isinstance(target, list):
-                        if not segment.isdecimal(): raise ValueError()
-                        target = target[int(segment)]
-                    else: target = target[segment]
-                if not isinstance(target, (dict, bool)): raise ValueError()
+    except ResponseError as error:
+        error.param = param
+        raise
     except (SchemaError, ValueError, KeyError, IndexError, TypeError, RecursionError):
         raise ResponseError('Invalid function parameter schema or reference', param=param) from None
 
@@ -81,7 +96,7 @@ def normalize_tools(tools):
     result, names = [], set()
     for index, original in enumerate(tools):
         param = f'tools[{index}]'
-        tool = deepcopy(original)
+        tool = dict(original)
         name = tool.get('name')
         if (tool.get('type') != 'function' or not isinstance(name, str)
                 or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', name)):
@@ -99,7 +114,9 @@ def normalize_tools(tools):
         if schema is None: schema = {'type':'object','properties':{},'required':[],'additionalProperties':False}
         if not isinstance(schema, dict): raise ResponseError('parameters must be an object', param=param + '.parameters')
         _check_schema(schema, param + '.parameters')
-        effective = deepcopy(schema)
+        try: effective = deepcopy(schema)
+        except RecursionError:
+            raise ResponseError('Function schema is too deeply nested',param=param+'.parameters') from None
         if strict is True:
             if not _strict(effective, False): raise ResponseError('Unsupported or non-strict function schema', param=param + '.parameters')
         elif strict is None:

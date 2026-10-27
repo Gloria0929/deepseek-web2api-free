@@ -1,6 +1,5 @@
 """Responses wire models and Item conversion, independent of HTTP/execution."""
 from copy import deepcopy
-import json
 import time
 import uuid
 
