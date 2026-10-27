@@ -1,6 +1,6 @@
 # DeepSeek Chat API Proxy
 
-当前版本：**v4.1.0** — [中文发布说明](docs/release-notes/v4.1.0.md)：Responses API、图片续聊、多函数调用与 SDK 兼容增强。
+当前版本：**v4.1.1** — [中文发布说明](docs/release-notes/v4.1.1.md)：文档与配置说明对齐当前实现。
 
 > 将 DeepSeek Chat (chat.deepseek.com) 的私有 API 转换为 OpenAI / Anthropic 兼容格式。
 
@@ -292,6 +292,10 @@ data: [DONE]
 
 ---
 
+### `/v1/responses`
+
+支持创建响应，以及按 ID 检索和删除已存储响应。标准 SDK 的文本、图片、流式、多轮与函数调用示例，以及状态和能力边界，见 [Responses 文档](docs/responses-api.md)。
+
 ### `POST /v1/messages`
 
 Anthropic Claude API 兼容的聊天补全接口。
@@ -523,7 +527,7 @@ DeepSeek Chat 协议本身支持 `parent_message_id` 串接同 `chat_session_id`
 - **隔离与账号绑定**：缓存同时绑定调用方和创建会话的 DeepSeek 账号；同一上游 session 不会跨账号提交。
 - **无显式标识时**：不复用会话。不会再根据第一条消息推断 key，以避免不同用户因首句相同而串话。
 
-会话缓存默认 TTL 为 1800 秒（`SESSION_CACHE_TTL`），过期后自动开始新会话。设置 `SESSION_CACHE_TTL=0` 完全禁用多轮行为。
+聊天补全和 Anthropic 的会话缓存默认 TTL 为 1800 秒（`SESSION_CACHE_TTL`），过期后自动开始新会话。设置 `SESSION_CACHE_TTL=0` 只禁用这两种接口的会话缓存复用；客户端仍可重发完整历史来重建上下文。Responses 的 `previous_response_id` 使用独立的有界内存状态，不受此设置控制。
 
 ```bash
 # OpenAI 多轮示例（带 X-Conversation-Id 头）
@@ -627,7 +631,7 @@ OpenAI 非流式 `usage` 使用 `tiktoken` / `cl100k_base` 在本地估算文字
 ┌──────────────────────────────────────────────────────────────────┐
 │                          管理面板                                │
 │  ┌──────────────────────┐  ┌──────────────────────────────────┐ │
-│  │ 前端 SPA (webui/)    │  │ Admin API (admin.py)             │ │
+│  │ 前端 (webui-new/)    │  │ Admin API (admin.py)             │ │
 │  │ · 概览面板           │◄─┤ · 密码认证 / 统计 / 账号管理     │ │
 │  │ · 账号池管理         │  │ · 重登录触发                     │ │
 │  └──────────────────────┘  └───────┬──────────────────────────┘ │
@@ -683,16 +687,20 @@ OpenAI 非流式 `usage` 使用 `tiktoken` / `cl100k_base` 在本地估算文字
 | 文件 | 职责 |
 |------|------|
 | `server.py` | FastAPI 服务器，路由分发，MODE/THINKING 控制，OpenAI SSE 格式化 |
+| `chat_service.py` / `chat_runtime.py` | 协议无关的聊天执行、事件及取消安全的资源管理 |
+| `responses_routes.py` / `responses_format.py` / `responses_stream.py` | Responses 请求、响应和流式事件适配 |
+| `responses_tools.py` / `response_store.py` | Responses 工具调用校验和有界快照状态 |
+| `image_inputs.py` / `image_sources.py` / `deepseek_files.py` | 图片规范化、来源校验、上传与处理轮询 |
 | `adapter.py` | DeepSeek 协议适配器 — PoW 挑战求解，会话创建/管理，原生 SSE 解析，fragment 状态机 |
 | `anthropic_format.py` | Anthropic `/v1/messages` 格式转换 — 请求解析、响应组装、SSE 生成 |
 | `tool_sieve.py` | StreamSieve 流式筛分引擎 — 逐字符检测 DSML 工具调用标签，实时分离正文与工具调用 |
 | `tool_dsml.py` | DSML 解析器/生成器 — XML 格式的 DSML ↔ OpenAI tool_calls 双向转换 |
 | `account_pool.py` | 多账号管理 — CRUD、状态追踪（idle/busy/error）、轮询分配、健康检查 |
 | `admin.py` | 管理后台 API — 密码认证、请求统计、账号池增删查改、重登录触发 |
-| `webui/` | 管理面板前端 — 纯静态 SPA，零 build 依赖 |
+| `webui-new/` | Vite + React 管理面板源码；构建产物位于 `webui-new/dist/` |
 | `sha3_wasm_bg.wasm` | WASM 二进制，用于 DeepSeekHashV1 工作量证明求解 |
 
-### 请求生命周期
+### 聊天补全请求生命周期
 
 1. **客户端请求** → `/v1/chat/completions` 收到 OpenAI 格式请求
 2. **能力解析** → `server.py: resolve_model_controls()` 按 `MODEL_ROUTES` → `THINKING`/`SEARCH` → 请求参数的顺序确定 `thinking_enabled` / `search_enabled`（`model_type` 仅作协议字段，恒为 `"default"`）
@@ -704,6 +712,8 @@ OpenAI 非流式 `usage` 使用 `tiktoken` / `cl100k_base` 在本地估算文字
    - 非流式：解析 SSE 收集全部内容 → 检测工具调用 → 返回 OpenAI 格式
    - 流式：逐 token 转发 → StreamSieve 实时筛分 → 格式化 OpenAI SSE
 
+Responses 使用独立的协议适配与快照状态，续聊时在原账号上新建上游会话并重放历史；详见 [Responses 文档](docs/responses-api.md)。
+
 ---
 
 ## 文件结构
@@ -711,15 +721,17 @@ OpenAI 非流式 `usage` 使用 `tiktoken` / `cl100k_base` 在本地估算文字
 ```
 ├── server.py            # FastAPI 服务器主入口
 ├── adapter.py           # DeepSeek 协议适配器 (PoW, 会话, SSE)
+├── chat_service.py      # 协议无关的聊天执行与事件
+├── responses_*.py       # Responses 协议、工具校验与流式事件
+├── response_store.py    # Responses 有界内存快照
 ├── anthropic_format.py  # Anthropic /v1/messages 格式转换
+├── image_*.py           # 图片规范化、来源校验和 HTTP 边界
+├── deepseek_files.py    # 上游图片上传与处理轮询
 ├── tool_sieve.py        # StreamSieve 流式工具调用检测引擎
 ├── tool_dsml.py         # DSML 解析器/生成器
 ├── account_pool.py      # 多账号池管理 (轮询、状态追踪、健康检查)
 ├── admin.py             # 管理后台 API 端点
-├── webui/               # 管理面板前端 (纯静态 SPA)
-│   ├── index.html
-│   ├── app.js
-│   └── style.css
+├── webui-new/           # Vite + React 管理面板源码，dist/ 为构建产物
 ├── sha3_wasm_bg.wasm    # WASM PoW 求解器
 ├── requirements.txt     # Python 依赖
 ├── .env.example         # 环境变量模板
@@ -770,10 +782,10 @@ OpenAI 非流式 `usage` 使用 `tiktoken` / `cl100k_base` 在本地估算文字
 
 排查清单：
 
-1. 是否带了 `X-Conversation-Id`（或 OpenAI 顶层 `user` / Anthropic `metadata.user_id`）？不带就每轮新建会话，必然失忆
-2. 两轮之间是否隔了超过 `SESSION_CACHE_TTL`（默认 1800 秒）？
-3. 是否在流式/非流式之间来回切换？v3.3.8 起两种模式共用同一会话缓存，此前的版本会因此各建一个会话
-4. 日志里出现 `session_prompt_diverged` 是正常提示，表示这一轮走了「保留会话 + 重发全文」的路径
+1. 聊天补全或 Anthropic 调用是否带了 `X-Conversation-Id`（或 OpenAI 顶层 `user` / Anthropic `metadata.user_id`）？不带时每轮新建会话，需要重发完整历史；Responses 请检查 `previous_response_id` 和其状态是否仍可用。
+2. 聊天补全/Anthropic 的两轮之间是否超过 `SESSION_CACHE_TTL`（默认 1800 秒）？Responses 应检查 `RESPONSES_TTL` 及祖先快照是否仍可用。
+3. 聊天补全或 Anthropic 是否在流式/非流式之间来回切换？v3.3.8 起这两种模式共用同一会话缓存，此前的版本会因此各建一个会话。
+4. 聊天补全/Anthropic 日志中出现 `session_prompt_diverged` 是正常提示，表示这一轮走了「保留会话 + 重发全文」的路径。
 
 ### Q: Windows 下 curl 请求中文返回 422
 
@@ -862,6 +874,7 @@ DeepSeek 的 Token 有效期不明确。认证失败可能是 HTTP 401/403，也
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `DEEPSEEK_ADMIN_PASSWORD` | `"admin"` | 管理面板登录密码（公网部署必须修改） |
+| `API_KEY_STORE_PATH` | `data/api_keys.sqlite3` | API key 数据库路径；相对路径以仓库目录为基准 |
 
 ### 限流 & 会话
 
@@ -870,7 +883,12 @@ DeepSeek 的 Token 有效期不明确。认证失败可能是 HTTP 401/403，也
 | `ENABLE_RATE_LIMIT` | `true` | 客户端限流总开关 |
 | `CLIENT_RPM_PER_KEY` | `60` | 每 API key 每分钟请求数 |
 | `CLIENT_RPM_PER_IP` | `120` | 每 IP 每分钟请求数 |
-| `SESSION_CACHE_TTL` | `1800` | 多轮会话缓存 TTL（秒），0 = 禁用多轮 |
+| `SESSION_CACHE_TTL` | `1800` | 聊天补全/Anthropic 会话缓存 TTL（秒），0 = 禁用缓存复用 |
+| `SESSION_CACHE_MAX` | `10000` | 聊天补全/Anthropic 会话缓存的最大条目数 |
+| `DEEPSEEK_MAX_CONCURRENCY` | `2` | 所有账号共享的上游请求并发上限 |
+| `DEEPSEEK_RATE_LIMIT_RETRY_DELAYS` | `5,15` | 上游限流后的重试等待秒数，逗号分隔 |
+
+Responses 的 TTL、记录数量、字节和历史深度限制独立配置，见 [Responses 状态配置](docs/responses-api.md#状态隔离与限制)。
 
 ### 安全 & 加密
 
@@ -971,14 +989,14 @@ OpenAI 的 `image_url.url` 也可使用公网 HTTP(S) 图片地址；Anthropic �
 | `IMAGE_MAX_IMAGES` | `8` | 请求图片部件数量，含历史和工具结果 |
 | `IMAGE_MAX_BYTES` | `10485760` | 单图解码后文件字节数（10 MiB） |
 | `IMAGE_MAX_TOTAL_BYTES` | `33554432` | 请求内全部图片文件字节数（32 MiB） |
-| `IMAGE_MAX_REQUEST_BYTES` | `41943040` | 两个聊天入口 JSON 请求体上限（40 MiB） |
+| `IMAGE_MAX_REQUEST_BYTES` | `41943040` | `/v1/chat/completions`、`/v1/messages`、`/v1/responses` 的 JSON 请求体上限（40 MiB） |
 | `IMAGE_MAX_PIXELS` | `25000000` | 单图像素上限 |
 | `IMAGE_DOWNLOAD_TIMEOUT` | `15` | 单图远程下载限制，秒 |
 | `IMAGE_PROCESSING_TIMEOUT` | `60` | 每次上传 HTTP 请求/批量处理轮询各自的超时，秒；不包含 PoW 和聊天 |
 
-这些是本服务的资源策略，不是上游最大能力声明。每个会话最多缓存 64 个文件引用，与调用方、账号及凭证绑定，随会话 TTL 过期；不在磁盘持久化图片。使用显式会话标识（如 `X-Conversation-Id`）可复用引用。客户端仍应保留原图以便重建历史。历史比较包含图片哈希，重试换会话保留可用图片引用。
+这些是本服务的资源策略，不是上游最大能力声明。聊天补全和 Anthropic 每个会话最多缓存 64 个文件引用，与调用方、账号及凭证绑定，随会话 TTL 过期；使用显式会话标识（如 `X-Conversation-Id`）可复用引用。Responses 通过 `previous_response_id` 在独立快照状态中保存账号绑定的引用，并在新会话中重放历史图片引用，详见 [Responses 状态说明](docs/responses-api.md#状态隔离与限制)。两种机制均不在磁盘持久化图片；客户端仍应保留原图以便重建历史。历史比较包含图片哈希，重试换会话保留可用图片引用。
 
-无法解码/损坏的图片返回 400、不支持格式 415、超限 413、文件服务限流 429、上游文件失败 502、处理轮询超时 504。请求结构不符合 schema 时可能返回 FastAPI 的 422 校验错误。图片输入错误不会把账号池标记为失效。OpenAI 非流式 `usage` 是文字与附件标记的估算；Anthropic usage 仍为 `-1`，两者均不提供准确的视觉 token 统计。
+无法解码/损坏的图片返回 400、不支持格式 415、超限 413、文件服务限流 429、上游文件失败 502、处理轮询超时 504。聊天补全和 Anthropic 的请求结构不符合 schema 时可能返回 FastAPI 的 422；Responses 的无效请求字段返回 400。图片输入错误不会把账号池标记为失效。OpenAI 非流式 `usage` 是文字与附件标记的估算；Anthropic usage 仍为 `-1`，两者均不提供准确的视觉 token 统计。
 
 ## 致谢
 

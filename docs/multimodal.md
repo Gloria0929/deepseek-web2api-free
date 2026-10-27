@@ -2,6 +2,8 @@
 
 Implementation and verification date: 2026-10-26. This document describes the code shipped with this change; it is not a claim about a future upstream API or a new release tag. Request examples and configurable limits are in [README](../README.md#图片输入与多模态) and [English README](../README_en.md#image-input).
 
+Since v4.1.0, the Responses API also supports image input and historical image references. See the current [Chinese](responses-api.md#图片) and [English](responses-api_en.md) Responses guides; the evidence and counts below describe the original 2026-10-26 work.
+
 ## Supported contract
 
 - OpenAI `/v1/chat/completions`: user `text` and `image_url` content parts. Image URLs can be base64 data URLs or public HTTP(S) URLs. `detail` has no upstream mapping.
@@ -24,7 +26,7 @@ The files client shares the selected account's authenticated transport. Remote i
 
 ## State and resource ownership
 
-Image hashes are included in prompt markers so changed or reordered images affect history comparison. The existing explicit caller-scoped conversation key and account binding isolate caches; credential changes invalidate reuse. Up to 64 references, without image bytes, are retained per cached conversation until session eviction/expiry. With no explicit conversation identifier, references are not retained between requests.
+For chat completions and Anthropic Messages, image hashes are included in prompt markers so changed or reordered images affect history comparison. The explicit caller-scoped conversation key and account binding isolate caches; credential changes invalidate reuse. Up to 64 references, without image bytes, are retained per cached conversation until session eviction/expiry. Without an explicit conversation identifier, these two endpoints do not retain references between requests. Responses instead stores account-bound references in its bounded snapshot state and replays historical references on `previous_response_id` continuation.
 
 Only newly needed files are uploaded within a reusable conversation. Current references follow attachment order; fresh-session retries carry the available full prompt and references. A latest-message-only client cannot reconstruct missing original image bytes after account changes; it must resend complete image history for that case. Neither file lifetime nor long-term retention is guaranteed by this local cache.
 

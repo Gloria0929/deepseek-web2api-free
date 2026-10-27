@@ -1,6 +1,6 @@
 # AGENTS.md — DeepSeek Chat API Proxy (Preview)
 
-当前发布版本：**v4.1.0**。中文变更与升级说明见 [docs/release-notes/v4.1.0.md](docs/release-notes/v4.1.0.md)。FastAPI、管理接口及 WebUI 包元信息已同步为 4.1.0；下文旧版本记录保留历史版本号。
+当前发布版本：**v4.1.1**。中文变更与升级说明见 [docs/release-notes/v4.1.1.md](docs/release-notes/v4.1.1.md)。FastAPI、管理接口及 WebUI 包元信息已同步为 4.1.1；下文旧版本记录保留历史版本号。
 
 ## Responses API（2026-10-27）
 
@@ -15,11 +15,11 @@
 
 ## 多模态输入（2026-10-26）
 
-- OpenAI `image_url`、Anthropic `image.source`（含用户 tool_result 嵌套图片）均进入共享准备链，四条聊天路径支持静态 JPEG/PNG/WebP。
+- OpenAI 聊天补全 `image_url`、Anthropic `image.source`（含用户 tool_result 嵌套图片）和 Responses `input_image` 均进入共享准备链，支持静态 JPEG/PNG/WebP 的流式与非流式输入。
 - `image_inputs.py` 管理内部类型、限额和有序附件标记；`image_sources.py` 管理 base64/data URL、公网地址校验、DNS 固定连接和 Pillow 校验。
 - `deepseek_files.py` 使用同账号 transport 和上传专用 PoW，multipart `file` 上传后以重复 `file_ids` 参数轮询到 SUCCESS；不要使用逗号拼接。
-- `turn_preparation.py` 共用账号绑定、图片去重、增量 prompt/refs 和新会话重试输入；引用仅在会话内缓存，绑定调用方、账号 ID 和凭证指纹，不持久化图片。
-- `image_http.py` 限制 JSON 请求体并渲染两种协议的图片错误；准备工作和同步流读取在线程执行。历史状态在聊天成功后提交。
+- `turn_preparation.py` 共用账号绑定、图片去重、增量 prompt/refs 和新会话重试输入。聊天补全和 Anthropic 的图片引用存于会话缓存；Responses 引用存于调用方、账号及凭证绑定的快照，在新会话重放历史引用。两者均不持久化图片字节。
+- `image_http.py` 对聊天补全、Anthropic Messages 和 Responses 限制 JSON 请求体，并按协议渲染图片错误；准备工作和同步流读取在线程执行。历史状态在聊天成功后提交。
 - 配置与示例见 README 的“图片输入与多模态”。OpenAI 非流式 usage 为本地文字估算，Anthropic usage 仍为 -1；均不提供准确视觉 token。历史发布记录仅描述当时行为，当前能力以本节和对应实现为准。
 
 > 本文档面向后续维护本项目的 AI 智能体，完整阐述项目的实现原理、协议细节、代码架构和已知问题。**请先全文阅读本文档再开始任何修改**。
@@ -197,10 +197,11 @@
 | 能力 | 状态 | 说明 |
 |------|------|------|
 | OpenAI 兼容接口 | ✅ | `/v1/chat/completions`, `/v1/models`, `/health` |
+| Responses 兼容子集 | ✅ | `/v1/responses` 创建/检索/删除，typed SSE、图片、函数调用与本地快照续聊 |
 | Anthropic 兼容接口 | ✅ | `/v1/messages` — Anthropic Claude API 格式 |
-| 流式输出 (SSE) | ✅ | OpenAI chunk 格式 + Anthropic SSE 格式 |
+| 流式输出 (SSE) | ✅ | 聊天补全 chunk、Responses typed SSE 和 Anthropic SSE |
 | 非流式输出 | ✅ | 完整响应 |
-| 多轮对话 | ✅ | 客户端通过 messages 数组管理上下文；服务端另有 `SESSION_CACHE_TTL`（默认 1800s）会话缓存 + 增量 prompt（§5.6） |
+| 多轮对话 | ✅ | 聊天补全/Anthropic 可重发完整 messages 或使用会话缓存；Responses 使用独立快照和 `previous_response_id` |
 | 直接回答（快速模式） | ✅ | 上游 `model_type="default"`——2026-10 起**唯一**可用、可切换的上游模式 |
 | 专家模式 | ⚠️ | 已与快速模式合并（2026-10-18 实测）：`model_type="expert"` 被上游改写为 `"default"`，能力差异只剩 `thinking_enabled`（§7.6） |
 | 工具调用 | ✅ | 基于 DSML 提示词注入（非原生） |
@@ -219,7 +220,9 @@
 
 ### 1.3 项目版本
 
-- 当前主线：`v3.3.8`（2026-10-18）— 跟进上游「快速模式 / 专家模式」合并：**收敛为单模型**（`/v1/models` 只列 `MODEL_NAME`，旧名 `deepseek-reasoner` 降为不改行为的别名，思考由 `THINKING` 决定），`model_type` 降级为协议字段，`MODEL_ROUTES` 降级为可选高级覆盖，新增统一决策函数 `resolve_model_controls()`，合并流式/非流式会话缓存键，并修复「客户端每轮只发最新消息」时的多轮失忆；完整变更见 [docs/release-notes/v3.3.8.md](docs/release-notes/v3.3.8.md)
+- 当前主线：`v4.1.1`（2026-10-27）— 对齐文档中的接口、状态管理和配置说明；完整变更见 [docs/release-notes/v4.1.1.md](docs/release-notes/v4.1.1.md)。
+- `v4.1.0`（2026-10-27）— 新增 Responses API、图片续聊、多函数调用和标准 SDK 兼容验收；完整变更见 [docs/release-notes/v4.1.0.md](docs/release-notes/v4.1.0.md)。
+- 历史版本：`v3.3.8`（2026-10-18）— 跟进上游「快速模式 / 专家模式」合并：**收敛为单模型**（`/v1/models` 只列 `MODEL_NAME`，旧名 `deepseek-reasoner` 降为不改行为的别名，思考由 `THINKING` 决定），`model_type` 降级为协议字段，`MODEL_ROUTES` 降级为可选高级覆盖，新增统一决策函数 `resolve_model_controls()`，合并流式/非流式会话缓存键，并修复「客户端每轮只发最新消息」时的多轮失忆；完整变更见 [docs/release-notes/v3.3.8.md](docs/release-notes/v3.3.8.md)
 - `v3.3.6`（2026-10）— 在 v3.3.5 基础上新增 WebUI 客户端 API Key 管理，统一账号池配置，并改进 Windows 启动脚本和 WebUI 依赖构建失败处理；完整变更见 [docs/release-notes/v3.3.6.md](docs/release-notes/v3.3.6.md)
 - 自 v3.0.0 起开源版与预览版已合并为单一主线，无独立 `--pre` 分支
 
@@ -228,9 +231,15 @@
 ## 2. 目录结构
 
 ```
-D:\the llaa\DS反代 --pre\
+deepseek-web2api-free/
 ├── server.py              # FastAPI 服务入口（路由、请求模型、SSE 组装）
 ├── adapter.py             # DeepSeek API 适配器（PoW、会话、SSE 解析）
+├── chat_service.py        # 协议无关的聊天执行与事件
+├── chat_runtime.py        # 取消安全的线程、流和账号生命周期
+├── responses_*.py         # Responses 协议、工具策略与流式输出
+├── response_store.py      # Responses 有界内存快照
+├── image_*.py            # 图片输入、来源校验和 HTTP 边界
+├── deepseek_files.py      # 图片上传与处理轮询
 ├── anthropic_format.py    # Anthropic /v1/messages 格式转换层
 ├── account_pool.py        # 多账号池管理（CRUD、状态追踪、轮询分配、健康检查）
 ├── admin.py               # 管理后台 API（密码认证、请求统计、账号池管理）
@@ -254,6 +263,10 @@ D:\the llaa\DS反代 --pre\
 | 文件 | 职责 | 不负责 |
 |------|------|--------|
 | `server.py` | HTTP 路由、请求/响应模型、OpenAI 格式组装、工具调用协调、**能力决策**（`resolve_model_controls()`：`MODEL_ROUTES`/`THINKING`/`SEARCH`/旧 `MODE` → `model_type`+thinking+search）、多轮会话缓存与 prompt 组装（`_cache_key()` / `SessionCache` / `prepare_prompt()`） | PoW 求解、原生 SSE 解析 |
+| `chat_service.py` / `chat_runtime.py` | 协议无关聊天执行、事件与取消安全的线程/账号生命周期 | HTTP 协议模型和响应组装 |
+| `responses_routes.py` / `responses_format.py` / `responses_stream.py` | Responses 路由组合、Items 转换和 SSE 事件 | DeepSeek 原生协议解析 |
+| `responses_tools.py` / `response_store.py` | Responses 工具策略与有界、调用方隔离的快照 | 函数执行、原始图片持久化 |
+| `image_inputs.py` / `image_sources.py` / `deepseek_files.py` | 图片规范化、安全下载、上游上传与处理轮询 | 各 API 的响应组装 |
 | `model_router.py` | `MODEL_ROUTES` 解析：model 名 → 能力预设（`model_type` 协议字段 + `thinking`/`search`）；字符串简写=思考开关，dict 形式可显式指定字段；`DEFAULT_MODEL_TYPE="default"`；`ModelRouter(models=[...])` 提供 `/v1/models` 回落名单 | 环境变量优先级决策（在 `server.py`）、HTTP 路由 |
 | `session_cache.py` | 多轮会话缓存：`conv:<sha256>` 键派生、TTL（默认 1800s）、`delta_prompt()` 前缀比对、`ChatSession.diverged_turns` 计数 | HTTP 路由、上游协议 |
 | `adapter.py` | 与 DeepSeek API 通信、PoW 求解、SSE 流解析、会话创建 | HTTP 路由、OpenAI/Anthropic 格式 |
@@ -263,7 +276,7 @@ D:\the llaa\DS反代 --pre\
 | `tool_dsml.py` | DSML XML 解析与生成、工具提示词构建 | 流式检测、HTTP |
 | `tool_sieve.py` | 流式文本中实时检测 DSML 工具调用标签 | 协议解析、HTTP |
 
-**核心原则：** `adapter.py` 的输出是"裸 token 流"（str 或 dict），`server.py` 和 `anthropic_format.py` 分别负责包装成特定 API 格式。`adapter.py` 不知道任何 API 格式的存在。
+**核心原则：** `adapter.py` 的输出是"裸 token 流"（str 或 dict）；聊天补全、Anthropic 和 Responses 的格式组装分别由对应协议层负责，共享执行与资源生命周期放在 `chat_service.py` / `chat_runtime.py`。`adapter.py` 不依赖这些 HTTP 协议格式。
 
 #### 辅助文件
 
@@ -1090,7 +1103,7 @@ yield "data: [DONE]\n\n"
 
 #### `ref_file_ids` 字段
 
-静态 JPEG/PNG/WebP 通过 `deepseek_files.py` 上传；使用 target_path=/api/v0/file/upload_file 的独立 PoW，multipart 字段 file。通过 `GET /api/v0/file/fetch_files` 的重复 file_ids 参数轮询至 SUCCESS，随后把图片 ID 传入 completion。上传和聊天使用同一账号；当前不提供 PDF 或公开文件管理/删除 API。续聊只发送本轮相关引用，新会话重试保留可用历史引用。
+静态 JPEG/PNG/WebP 通过 `deepseek_files.py` 上传；使用 target_path=/api/v0/file/upload_file 的独立 PoW，multipart 字段 file。通过 `GET /api/v0/file/fetch_files` 的重复 file_ids 参数轮询至 SUCCESS，随后把图片 ID 传入 completion。上传和聊天使用同一账号；当前不提供 PDF 或公开文件管理/删除 API。聊天补全和 Anthropic 在复用会话续聊时发送本轮相关引用，新会话重试保留可用历史引用；Responses 每轮新建上游会话并重放该快照历史的图片引用。
 
 #### `search_enabled` 行为
 

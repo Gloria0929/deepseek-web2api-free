@@ -2,7 +2,7 @@
 
 Responses API: verified with Python sync/async and JavaScript SDKs for text/images, typed SSE, multiple function calls and immutable `previous_response_id` state. See the [supported subset and examples](docs/responses-api_en.md).
 
-Current version: **v4.1.0** — [Release notes (Chinese)](docs/release-notes/v4.1.0.md): Responses API, image conversations, multi-function calls and SDK compatibility.
+Current version: **v4.1.1** — [Release notes (Chinese)](docs/release-notes/v4.1.1.md): documentation and configuration clarification.
 
 > Convert DeepSeek Chat's (chat.deepseek.com) private API into an **OpenAI / Anthropic compatible** format.
 
@@ -244,6 +244,7 @@ OpenAI-compatible chat completion endpoint.
 | `max_tokens` | `int` | `null` | Accepted for compatibility; currently ignored, without output truncation |
 | `thinking_mode` | `boolean` | `false` | enable deep reasoning (upstream `thinking_enabled`, the former expert mode) |
 | `search_enabled` | `boolean` | `false` | Enable web search enhancement |
+| `user` | `string` | `null` | Conversation identifier for session reuse (alternative to `X-Conversation-Id`; see Multi-turn Conversation) |
 | `tools` | `array` | `null` | OpenAI-format tool definitions |
 | `tool_choice` | `string\|dict` | `null` | Tool selection strategy |
 
@@ -288,6 +289,10 @@ data: [DONE]
 ```
 
 ---
+
+### `/v1/responses`
+
+Create responses and retrieve or delete stored responses by ID. For standard SDK text, image, streaming, conversation and function examples, plus state and capability limits, see the [Responses guide](docs/responses-api_en.md).
 
 ### `POST /v1/messages`
 
@@ -521,7 +526,7 @@ The DeepSeek Chat protocol itself supports chaining messages within the same `ch
 - **Isolation and account binding**: cached sessions are scoped to the caller and bound to the DeepSeek account that created them; an upstream session is never submitted with another account's credentials.
 - **Without an explicit identifier**: sessions are not reused. The proxy never infers a key from the first message, since unrelated users often share the same opener.
 
-The session cache TTL defaults to 1800 seconds (`SESSION_CACHE_TTL`); a new session starts automatically after expiry. Set `SESSION_CACHE_TTL=0` to fully disable multi-turn behavior.
+The chat completions and Anthropic session cache TTL defaults to 1800 seconds (`SESSION_CACHE_TTL`); a new session starts after expiry. `SESSION_CACHE_TTL=0` disables session-cache reuse for those endpoints; clients can still resend complete history. Responses `previous_response_id` uses separate bounded in-memory state and is unaffected by this setting.
 
 ```bash
 # OpenAI multi-turn example (with X-Conversation-Id header)
@@ -624,7 +629,7 @@ Before deploying to the public internet, check in order:
 ┌──────────────────────────────────────────────────────────────────┐
 │                          Admin Panel                            │
 │  ┌──────────────────────┐  ┌──────────────────────────────────┐ │
-│  │ Frontend SPA (webui) │  │ Admin API (admin.py)             │ │
+│  │ Frontend (webui-new) │  │ Admin API (admin.py)             │ │
 │  │ · Overview           │◄─┤ · Password auth / stats / acct mgmt │
 │  │ · Account pool mgmt  │  │ · Re-login trigger               │ │
 │  └──────────────────────┘  └───────┬──────────────────────────┘ │
@@ -681,16 +686,20 @@ Before deploying to the public internet, check in order:
 | File | Responsibility |
 |------|------|
 | `server.py` | FastAPI server, routing, THINKING/SEARCH capability control, OpenAI SSE formatting |
+| `chat_service.py` / `chat_runtime.py` | Protocol-neutral chat execution, events and cancellation-safe resource ownership |
+| `responses_routes.py` / `responses_format.py` / `responses_stream.py` | Responses request, response and streaming event adapters |
+| `responses_tools.py` / `response_store.py` | Responses function-call validation and bounded snapshot state |
+| `image_inputs.py` / `image_sources.py` / `deepseek_files.py` | Image normalization, source validation, upload and processing polling |
 | `adapter.py` | DeepSeek protocol adapter — PoW challenge solving, session create/manage, native SSE parsing, fragment state machine |
 | `anthropic_format.py` | Anthropic `/v1/messages` format conversion — request parsing, response assembly, SSE generation |
 | `tool_sieve.py` | StreamSieve streaming sieve engine — character-by-character DSML tool-call tag detection, real-time separation of body text and tool calls |
 | `tool_dsml.py` | DSML parser/generator — bidirectional XML-format DSML ↔ OpenAI tool_calls conversion |
 | `account_pool.py` | Multi-account management — CRUD, state tracking (idle/busy/error), round-robin allocation, health checks |
 | `admin.py` | Admin backend API — password auth, request stats, account pool CRUD, re-login trigger |
-| `webui/` | Admin panel frontend — pure static SPA, zero build dependency |
+| `webui-new/` | Vite + React admin panel source; build output is in `webui-new/dist/` |
 | `sha3_wasm_bg.wasm` | WASM binary for DeepSeekHashV1 proof-of-work solving |
 
-### Request lifecycle
+### Chat completions request lifecycle
 
 1. **Client request** → `/v1/chat/completions` receives an OpenAI-format request.
 2. **Capability resolution** → `resolve_model_controls()` picks `thinking_enabled` / `search_enabled` (`model_type` is a protocol field, always `"default"`).
@@ -702,6 +711,8 @@ Before deploying to the public internet, check in order:
    - Non-streaming: parse SSE to collect all content → detect tool calls → return OpenAI format.
    - Streaming: forward token by token → StreamSieve filters in real time → format OpenAI SSE.
 
+Responses uses its own protocol adapter and snapshot state, replaying history in a new upstream session on the original account; see the [Responses guide](docs/responses-api_en.md).
+
 ---
 
 ## File Structure
@@ -709,15 +720,17 @@ Before deploying to the public internet, check in order:
 ```
 ├── server.py            # FastAPI server main entry
 ├── adapter.py           # DeepSeek protocol adapter (PoW, sessions, SSE)
+├── chat_service.py      # Protocol-neutral chat execution and events
+├── responses_*.py       # Responses protocol, tool validation and streaming
+├── response_store.py    # Bounded in-memory Responses snapshots
 ├── anthropic_format.py  # Anthropic /v1/messages format conversion
+├── image_*.py           # Image normalization, source validation and HTTP boundary
+├── deepseek_files.py    # Upstream image upload and processing polling
 ├── tool_sieve.py        # StreamSieve streaming tool-call detection engine
 ├── tool_dsml.py         # DSML parser/generator
 ├── account_pool.py      # Multi-account pool management (round-robin, state tracking, health checks)
 ├── admin.py             # Admin backend API endpoints
-├── webui/               # Admin panel frontend (pure static SPA)
-│   ├── index.html
-│   ├── app.js
-│   └── style.css
+├── webui-new/           # Vite + React admin source; dist/ is the build output
 ├── sha3_wasm_bg.wasm    # WASM PoW solver
 ├── requirements.txt     # Python dependencies
 ├── .env.example         # Environment variable template
@@ -768,10 +781,10 @@ First confirm how you call it — both styles are supported, with different requ
 
 Troubleshooting checklist:
 
-1. Did you pass `X-Conversation-Id` (or the OpenAI top-level `user` / Anthropic `metadata.user_id`)? Without it a new session is created every turn, so amnesia is guaranteed.
-2. Did more than `SESSION_CACHE_TTL` (default 1800 seconds) pass between the two turns?
-3. Are you switching back and forth between streaming and non-streaming? Since v3.3.8 both modes share the same session cache; earlier versions created one session per mode.
-4. A `session_prompt_diverged` line in the log is a normal hint: this turn took the "keep session + resend the full prompt" path.
+1. For chat completions or Anthropic, did you pass `X-Conversation-Id` (or the OpenAI top-level `user` / Anthropic `metadata.user_id`)? Without it each turn starts a new session and must resend complete history. For Responses, check `previous_response_id` and whether its state is still available.
+2. For chat completions/Anthropic, did more than `SESSION_CACHE_TTL` (default 1800 seconds) pass between turns? For Responses, check `RESPONSES_TTL` and whether ancestor snapshots remain available.
+3. For chat completions or Anthropic, are you switching between streaming and non-streaming? Since v3.3.8 those modes share one session cache; earlier versions created one session per mode.
+4. For chat completions/Anthropic, a `session_prompt_diverged` log is a normal hint that this turn kept the session and resent the full prompt.
 
 ### Q: curl on Windows returns 422 for Chinese requests
 
@@ -860,6 +873,7 @@ Client API keys are managed in WebUI > Settings, and only hashes are stored in S
 | Variable | Default | Description |
 |------|--------|------|
 | `DEEPSEEK_ADMIN_PASSWORD` | `"admin"` | admin panel login password (must change for public deployment) |
+| `API_KEY_STORE_PATH` | `data/api_keys.sqlite3` | API key database path; relative paths are resolved from the repository directory |
 
 ### Rate limiting & sessions
 
@@ -868,7 +882,12 @@ Client API keys are managed in WebUI > Settings, and only hashes are stored in S
 | `ENABLE_RATE_LIMIT` | `true` | client rate-limit master switch |
 | `CLIENT_RPM_PER_KEY` | `60` | requests per minute per API key |
 | `CLIENT_RPM_PER_IP` | `120` | requests per minute per IP |
-| `SESSION_CACHE_TTL` | `1800` | multi-turn session cache TTL (seconds), 0 = disable multi-turn |
+| `SESSION_CACHE_TTL` | `1800` | chat completions/Anthropic session cache TTL (seconds), 0 = disable cache reuse |
+| `SESSION_CACHE_MAX` | `10000` | maximum chat completions/Anthropic session-cache entries |
+| `DEEPSEEK_MAX_CONCURRENCY` | `2` | upstream request concurrency limit shared across accounts |
+| `DEEPSEEK_RATE_LIMIT_RETRY_DELAYS` | `5,15` | comma-separated backoff delays in seconds after upstream rate limiting |
+
+Responses TTL, record count, byte and history-depth limits are configured separately; see [Responses state settings](docs/responses-api_en.md).
 
 ### Security & encryption
 
@@ -943,14 +962,14 @@ Fake-IP DNS environments may resolve public hosts to non-global addresses such a
 | `IMAGE_MAX_IMAGES` | 8 blocks per request, including history |
 | `IMAGE_MAX_BYTES` | 10485760 bytes per image |
 | `IMAGE_MAX_TOTAL_BYTES` | 33554432 image bytes per request |
-| `IMAGE_MAX_REQUEST_BYTES` | 41943040 JSON request bytes |
+| `IMAGE_MAX_REQUEST_BYTES` | 41943040 JSON request bytes for `/v1/chat/completions`, `/v1/messages`, and `/v1/responses` |
 | `IMAGE_MAX_PIXELS` | 25000000 pixels per image |
 | `IMAGE_DOWNLOAD_TIMEOUT` | 15 seconds per download |
 | `IMAGE_PROCESSING_TIMEOUT` | 60 seconds for each upload HTTP request / processing poll deadline; excludes PoW and completion |
 
-These are local resource policies, not upstream capacity claims. Up to 64 file references are kept per caller-scoped, account/credential-bound conversation and expire with its TTL. Image bytes are not persisted. Use an explicit conversation ID to reuse references and keep originals for history reconstruction. Image-aware history and fresh-session retries retain available references. OpenAI non-streaming usage remains a text/marker estimate; Anthropic usage remains `-1`. Neither reports accurate visual-token accounting.
+These are local resource policies, not upstream capacity claims. Chat completions and Anthropic keep up to 64 file references per caller-scoped, account/credential-bound conversation until its TTL expires; use an explicit conversation ID to reuse them. Responses stores account-bound references in separate snapshot state via `previous_response_id` and replays historical references in a new session; see [Responses state](docs/responses-api_en.md). Neither mechanism persists image bytes, so keep originals for history reconstruction. Image-aware history and fresh-session retries retain available references. OpenAI non-streaming usage remains a text/marker estimate; Anthropic usage remains `-1`. Neither reports accurate visual-token accounting.
 
-Invalid decoded image content returns 400, unsupported formats 415, exceeded limits 413, file-service throttling 429, upstream file failures 502 and processing poll timeouts 504. Request schema errors may return FastAPI validation errors (422). Image failures do not automatically mark credentials as invalid.
+Invalid decoded image content returns 400, unsupported formats 415, exceeded limits 413, file-service throttling 429, upstream file failures 502 and processing poll timeouts 504. Chat completions and Anthropic schema errors may return FastAPI validation errors (422); invalid Responses request fields return 400. Image failures do not automatically mark credentials as invalid.
 
 ## Acknowledgments
 
