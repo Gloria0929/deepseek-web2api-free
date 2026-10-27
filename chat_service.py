@@ -55,20 +55,24 @@ class ChatService:
         return ChatResult(cleaned if calls else text, reasoning, calls)
 
     @classmethod
-    def events(cls, acquired, turn, options, tool_names, ready):
+    def events(cls, acquired, turn, options, tool_names, ready, *, batch_tools=False, on_token=None):
         sieve = StreamSieve(parse_fn=lambda text: parse_dsml_tool_calls(text, tool_names))
+        def converted(events):
+            for event in events:
+                if event.type == 'text' and event.data: yield ChatEvent('text', event.data)
+                elif event.type == 'tool_calls':
+                    if batch_tools: yield ChatEvent('tools', calls=event.data)
+                    else:
+                        for call in event.data: yield ChatEvent('tool', call=call)
         with closing(cls.tokens(acquired, turn, options, ready)) as source:
             for token in source:
+                if on_token is not None:
+                    try: on_token()
+                    except Exception: pass
                 if isinstance(token, dict):
                     if token.get('__type') == 'status' and token.get('status') == 'FINISHED': break
                     if token.get('__type') == 'thinking' and token.get('content'):
                         yield ChatEvent('reasoning', token['content'])
                     continue
-                for event in sieve.feed(token):
-                    if event.type == 'text' and event.data: yield ChatEvent('text', event.data)
-                    elif event.type == 'tool_calls':
-                        for call in event.data: yield ChatEvent('tool', call=call)
-            for event in sieve.flush():
-                if event.type == 'text' and event.data: yield ChatEvent('text', event.data)
-                elif event.type == 'tool_calls':
-                    for call in event.data: yield ChatEvent('tool', call=call)
+                yield from converted(sieve.feed(token))
+            yield from converted(sieve.flush())

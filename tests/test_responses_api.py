@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -131,6 +132,45 @@ def test_limits_auth_and_changed_credentials(backend, monkeypatch):
             raise HTTPException(401, 'Invalid API key')
         monkeypatch.setattr(server, '_check_api_auth', deny)
         assert http.post('/v1/responses', json={'input':'x'}).status_code == 401
+
+
+def batch_text(second='London'):
+    return '<tool_calls>' + ''.join(f'<invoke name="weather"><parameter name="city"><![CDATA[{city}]]></parameter></invoke>'
+        for city in ('Paris',second)) + '</tool_calls>'
+
+
+@pytest.mark.parametrize('stream', [False,True])
+def test_multiple_functions_reverse_results_and_effective_tools(backend, stream):
+    backend.state.text = batch_text()
+    tools = [{'type':'function','name':'weather','parameters':{'type':'object','properties':{'city':{'type':'string'}}}}]
+    with TestClient(server.app) as http:
+        client = sdk(http)
+        if stream:
+            with client.responses.stream(model='deepseek-chat',input='weather',tools=tools,parallel_tool_calls=True) as events:
+                observed = list(events); response = events.get_final_response()
+            indices = [e.output_index for e in observed if e.type == 'response.function_call_arguments.done']
+            assert indices == sorted(set(indices)) and len(indices) == 2
+        else: response = client.responses.create(input='weather',tools=tools,parallel_tool_calls=True)
+        calls = [i for i in response.output if i.type == 'function_call']
+        assert len(calls) == 2 and len({i.call_id for i in calls}) == 2
+        assert response.parallel_tool_calls and response.tools[0].strict
+        backend.state.text = 'both cities'
+        outputs = [{'type':'function_call_output','call_id':i.call_id,'output':'result'} for i in reversed(calls)]
+        final = client.responses.create(input=outputs,previous_response_id=response.id)
+        assert final.output_text == 'both cities'
+        assert backend.calls[-1][1].rindex(calls[1].call_id) < backend.calls[-1][1].rindex(calls[0].call_id)
+
+
+def test_invalid_second_call_has_no_function_items_and_no_snapshot(backend):
+    backend.state.text = batch_text('123')
+    with TestClient(server.app) as http:
+        response = http.post('/v1/responses',json={'input':'x','stream':True,'parallel_tool_calls':True,
+            'tools':[{'type':'function','name':'weather','parameters':{'type':'object','properties':{'city':{'type':'string'}}}}]})
+    assert response.status_code == 200
+    frames = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith('data: ')]
+    assert [f['type'] for f in frames].count('response.failed') == 1
+    assert not any(f['type'] == 'response.output_item.added' and f['item']['type'] == 'function_call' for f in frames)
+    assert 'response.completed' not in response.text and not server.RESPONSE_STORE._records
 
 
 @pytest.mark.parametrize('stream', [False, True])

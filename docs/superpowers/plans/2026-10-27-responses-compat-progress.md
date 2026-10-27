@@ -13,3 +13,7 @@ Task1: RED 15 request/error cases failed as expected; implemented strict boolean
 Task1: complete. Full pytest247 passed; commit4722f08.
 
 Task2: RED9 policy cases; normalized strict schemas, valid fallback/null/empty definitions, offline refs/finite JSON, 64-call policy and all-results-before-generation implemented. Updated old local-ref unit fixture to include the now-required call_id. Ruling: reject resource-scoping $id/anchors/dynamic refs explicitly, because root-only pointers would otherwise be misinterpreted and offline validation must not resolve other resources. Default schema annotations remain data, not subschemas.
+
+Task2: complete. Full pytest256 passed; commit21f68be.
+
+Task3: RED4 batch/SDK cases; opt-in complete tool batches, cumulative validation before emit, explicit parallel true (defaultfalse), effective response flag, reversed output loop implemented. Removed obsolete parallel=true unsupported test; replaced with positive/negative batch tests. Fixed new test's missing json import after its intended request-level RED became GREEN. Existing cancellation/worker ownership remains shared; real TCP batch aborts belong to Task5.

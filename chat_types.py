@@ -7,6 +7,7 @@ class ChatEvent:
     kind: str
     text: str = ''
     call: dict | None = None
+    calls: list[dict] | None = None
 
 
 @dataclass

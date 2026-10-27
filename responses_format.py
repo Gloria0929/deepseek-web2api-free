@@ -52,7 +52,7 @@ class ResponsesRequest(BaseModel):
     @model_validator(mode='after')
     def supported(self):
         unsupported = {'background': self.background, 'conversation': self.conversation,
-            'parallel_tool_calls': self.parallel_tool_calls, 'max_output_tokens': self.max_output_tokens,
+            'max_output_tokens': self.max_output_tokens,
             'temperature': self.temperature, 'top_p': self.top_p}
         for name, value in unsupported.items():
             if value is not None and value is not False:
@@ -177,7 +177,7 @@ def response_object(request, response_id, model, output, prompt, status='complet
     return {'id': response_id, 'object': 'response', 'created_at': created_at or time.time(),
         'completed_at': time.time() if status == 'completed' else None, 'status': status, 'error': None,
         'incomplete_details': None, 'model': model, 'output': deepcopy(output), 'instructions': request.instructions,
-        'parallel_tool_calls': False, 'tool_choice': request.tool_choice, 'tools': request.tools,
+        'parallel_tool_calls': request.parallel_tool_calls, 'tool_choice': request.tool_choice, 'tools': request.tools,
         'store': request.store, 'previous_response_id': request.previous_response_id, 'metadata': request.metadata,
         'reasoning': None, 'text': {'format': {'type': 'text'}}, 'max_output_tokens': None,
         'temperature': None, 'top_p': None, 'truncation': 'disabled',

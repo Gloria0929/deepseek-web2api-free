@@ -19,7 +19,7 @@ def test_input_items_images_and_function_results():
     assert messages[-1]['content'] == 'sunny'
 
 
-@pytest.mark.parametrize('kwargs', [dict(background=True), dict(parallel_tool_calls=True),
+@pytest.mark.parametrize('kwargs', [dict(background=True),
     dict(max_output_tokens=20), dict(reasoning={'effort':'high'}), dict(text={'format':{'type':'json_schema'}}),
     dict(tools=[{'type':'web_search'}]), dict(tools=[{'type':'function','name':'x','parameters':{'$ref':'https://private/schema'}}])])
 def test_unsupported_guarantees_are_explicit(kwargs):

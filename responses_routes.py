@@ -10,6 +10,7 @@ from starlette.concurrency import run_in_threadpool
 
 from adapter import RateLimitError
 from chat_service import ChatService
+from chat_types import ChatEvent
 from chat_runtime import AccountStreamingResponse, iterate_upstream, prepare_account, thread_step
 from image_inputs import ImageError, ImageLimits
 from responses_errors import ResponseError, classify_error, validation_error
@@ -63,7 +64,8 @@ def create_responses_router(*, store, acquire, authenticate, scope, controls, mo
             prompt_messages = ([{'role':'system','content':req.instructions}] if req.instructions else []) + messages
             if req.tools and req.tool_choice != 'none':
                 prompt_messages = [{'role':'system','content':
-                    'Call at most one function. Function parameter JSON schemas:\n' + json.dumps(req.tools, ensure_ascii=False)}] + prompt_messages
+                    ('You may call multiple functions, at most 64. ' if req.parallel_tool_calls else 'Call at most one function. ')
+                    + 'Function parameter JSON schemas:\n' + json.dumps(req.tools, ensure_ascii=False)}] + prompt_messages
             prompt = ChatService.build_prompt(prompt_messages, req.chat_tools(), req.chat_choice(), tool_result_limit=None)
             options = controls(req.model)
             def prepare(acquired):
@@ -96,12 +98,15 @@ def create_responses_router(*, store, acquire, authenticate, scope, controls, mo
                 wire, calls = ResponseStream(req, response_id, model(), prompt, created), []
                 try:
                     for frame in wire.start(): yield frame
-                    async with aclosing(iterate_upstream(ChatService.events(acquired, turn, options, names, ready))) as source:
+                    async with aclosing(iterate_upstream(ChatService.events(acquired, turn, options, names, ready, batch_tools=True))) as source:
                         async for event in source:
-                            if event.kind == 'tool':
-                                calls.append(event.call)
-                                validate_calls(req, calls)
-                            for frame in wire.consume(event): yield frame
+                            if event.kind == 'tools':
+                                calls.extend(event.calls)
+                                validate_calls(req, calls, complete=False)
+                                for call in event.calls:
+                                    for frame in wire.consume(ChatEvent('tool', call=call)): yield frame
+                            else:
+                                for frame in wire.consume(event): yield frame
                     validate_calls(req, calls)
                     for frame in wire.close_active(): yield frame
                     response = wire.response()

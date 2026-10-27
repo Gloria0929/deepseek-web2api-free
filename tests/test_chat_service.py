@@ -25,3 +25,13 @@ def test_events_preserve_reasoning_and_close_raw_stream():
     events = list(ChatService.events(acquired, turn, {}, [], {}))
     assert [(e.kind, e.text) for e in events] == [('reasoning', 'think'), ('text', 'answer')]
     assert closed == [True]
+
+
+def test_opt_in_events_preserve_complete_tool_batch():
+    text = '<tool_calls><invoke name="f"><parameter name="x">1</parameter></invoke><invoke name="f"><parameter name="x">2</parameter></invoke></tool_calls>'
+    acquired = SimpleNamespace(adapter=SimpleNamespace(chat_stream=lambda *a, **k: (part for part in (text[:25],text[25:]))), parent_message_id=None)
+    turn = SimpleNamespace(session_id='s', prompt='p', completion_options=lambda: {})
+    events = list(ChatService.events(acquired, turn, {}, ['f'], {}, batch_tools=True))
+    batches = [e.calls for e in events if e.kind == 'tools']
+    assert len(batches) == 1 and len(batches[0]) == 2
+    assert [c['function']['arguments'] for c in batches[0]] == ['{"x": 1}', '{"x": 2}']
