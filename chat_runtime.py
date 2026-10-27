@@ -76,8 +76,9 @@ async def iterate_upstream(iterator):
 
 class AccountStreamingResponse(StreamingResponse):
     """Release even if the response is cancelled before its generator starts."""
-    def __init__(self, acquired, *args, **kwargs):
+    def __init__(self, acquired, *args, on_close=None, **kwargs):
         self.acquired = acquired
+        self.on_close = on_close
         super().__init__(*args, **kwargs)
 
     async def __call__(self, scope, receive, send):
@@ -90,3 +91,6 @@ class AccountStreamingResponse(StreamingResponse):
                     await close()
             finally:
                 self.acquired.release()
+                if self.on_close is not None:
+                    try: self.on_close()
+                    except Exception: pass

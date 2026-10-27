@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 
 from image_inputs import ImageAttachment
+from execution_observer import phase
 
 
 @dataclass
@@ -21,20 +22,23 @@ class PreparedTurn:
 
 def prepare_turn(acquired, prompt: str, attachments: tuple[ImageAttachment, ...] = (), *,
                  thinking: bool = False, model_type: str = 'default',
-                 replay_digests: list[str] | None = None) -> PreparedTurn:
+                 replay_digests: list[str] | None = None, observer=None) -> PreparedTurn:
     previous = getattr(acquired, 'previous_prompt', '')
     files = dict(getattr(acquired, 'image_files', {}))
     previous_refs = list(files.values())
     effective = acquired.prepare_prompt(prompt)
-    session = acquired.create_session()
+    with phase(observer, 'session_create'):
+        session = acquired.create_session()
     uploaded = []
     for image in attachments:
         digest = image.asset.digest
         if digest not in files:
-            files[digest] = acquired.adapter.files.upload(image.asset, thinking=thinking, model_type=model_type)
+            with phase(observer, 'image_upload', image_count=1, image_bytes=len(image.asset.data)):
+                files[digest] = acquired.adapter.files.upload(image.asset, thinking=thinking, model_type=model_type)
             uploaded.append(files[digest])
     if uploaded:
-        acquired.adapter.files.wait_ready(uploaded)
+        with phase(observer, 'image_processing', image_count=len(uploaded)):
+            acquired.adapter.files.wait_ready(uploaded)
     if files:
         # This is per-acquisition staging; the session is updated on chat success.
         acquired.stage_image_files(dict(list(files.items())[-64:]))

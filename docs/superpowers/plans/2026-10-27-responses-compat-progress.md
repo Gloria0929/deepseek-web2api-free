@@ -17,3 +17,7 @@ Task2: RED9 policy cases; normalized strict schemas, valid fallback/null/empty d
 Task2: complete. Full pytest256 passed; commit21f68be.
 
 Task3: RED4 batch/SDK cases; opt-in complete tool batches, cumulative validation before emit, explicit parallel true (defaultfalse), effective response flag, reversed output loop implemented. Removed obsolete parallel=true unsupported test; replaced with positive/negative batch tests. Fixed new test's missing json import after its intended request-level RED became GREEN. Existing cancellation/worker ownership remains shared; real TCP batch aborts belong to Task5.
+
+Task3: complete. Full pytest259 passed, smoke passed; commitf51ed8d.
+
+Task4: complete. RED4 generic observation cases plus route integration RED; full pytest264 passed. Added generic optional timing callbacks and request-local whitelisted logging; first-upstream and first-visible markers, finish-once and cancellation cleanup callbacks. Logger failures do not affect business results; synthetic input/output/URL sentinels absent. No database/UI/global diagnostic buffer.
