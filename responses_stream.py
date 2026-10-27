@@ -68,7 +68,7 @@ class ResponseStream:
             frames.append(self.emit('response.output_text.delta' if kind == 'message' else 'response.reasoning_text.delta', **fields))
         return frames
 
-    def fail(self, message):
+    def fail(self, error):
         response = self.response('failed')
-        response['error'] = {'code': 'server_error', 'message': message}
+        response['error'] = error.stream_payload()
         return self.emit('response.failed', response=response)

@@ -12,19 +12,13 @@ from adapter import RateLimitError
 from chat_service import ChatService
 from chat_runtime import AccountStreamingResponse, iterate_upstream, prepare_account, thread_step
 from image_inputs import ImageError, ImageLimits
-from responses_errors import ResponseError
+from responses_errors import ResponseError, classify_error, validation_error
 from responses_format import (ResponsesRequest, normalize_input, identifier, validate_calls,
                               output_items, history_output, response_object)
 from responses_stream import ResponseStream
 
 
-def public_error(error):
-    if isinstance(error, ResponseError): return error
-    if isinstance(error, ImageError): return ResponseError(str(error), error.status)
-    if isinstance(error, HTTPException): return ResponseError(str(error.detail), error.status_code)
-    if isinstance(error, RateLimitError): return ResponseError('Upstream rate limited the request', 429, 'rate_limit_exceeded')
-    if isinstance(error, ValidationError): return ResponseError('Invalid Responses request', 400)
-    return ResponseError('Upstream request failed', 502, 'server_error')
+public_error = classify_error
 
 
 def create_responses_router(*, store, acquire, authenticate, scope, controls, model, mark_error, record):
@@ -54,7 +48,8 @@ def create_responses_router(*, store, acquire, authenticate, scope, controls, mo
     async def create(request: Request):
         async def operation(headers):
             try: req = ResponsesRequest.model_validate(await request.json())
-            except (ValidationError, ValueError): raise ResponseError('Invalid or unsupported Responses request field', 400) from None
+            except ValidationError as error: raise validation_error(error) from None
+            except ValueError: raise ResponseError('Invalid JSON request', param='input') from None
             caller, memory = scope(request), store()
             parent = memory.get(caller, req.previous_response_id) if req.previous_response_id else None
             history = memory.history(caller, req.previous_response_id) if parent else []
@@ -115,7 +110,7 @@ def create_responses_router(*, store, acquire, authenticate, scope, controls, mo
                     yield wire.emit('response.completed', response=response)
                 except Exception as error:
                     record((time.monotonic() - started) * 1000, False)
-                    yield wire.fail(str(public_error(error)))
+                    yield wire.fail(public_error(error))
                 finally: acquired.release()
             return AccountStreamingResponse(acquired, events(), media_type='text/event-stream',
                 headers={'Cache-Control':'no-cache', **headers})

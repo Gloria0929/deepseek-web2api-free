@@ -19,7 +19,7 @@ def identifier(prefix):
 
 
 class ResponsesRequest(BaseModel):
-    model_config = ConfigDict(extra='forbid')
+    model_config = ConfigDict(extra='forbid', strict=True)
     input: str | list[dict]
     model: str | None = None
     instructions: str | None = None
@@ -39,6 +39,16 @@ class ResponsesRequest(BaseModel):
     temperature: float | None = None
     top_p: float | None = None
     truncation: str = 'disabled'
+
+    @model_validator(mode='before')
+    @classmethod
+    def nullable_defaults(cls, value):
+        if not isinstance(value, dict): return value
+        value = dict(value)
+        for name, default in {'metadata': {}, 'tools': [], 'include': [], 'tool_choice':'auto',
+                'parallel_tool_calls':False, 'background':False, 'truncation':'disabled'}.items():
+            if name in value and value[name] is None: value[name] = deepcopy(default)
+        return value
 
     @model_validator(mode='after')
     def supported(self):
