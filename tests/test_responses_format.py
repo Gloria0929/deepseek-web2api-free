@@ -73,4 +73,4 @@ def test_dangling_local_schema_reference_is_rejected_before_execution():
     valid = ResponsesRequest(input='x', tools=[{'type':'function','name':'f', 'parameters':{
         'type':'object', '$defs':{'value':{'type':'string'}},
         'properties':{'city':{'$ref':'#/$defs/value'}}}}])
-    validate_calls(valid, [{'function':{'name':'f','arguments':'{"city":"Paris"}'}}])
+    validate_calls(valid, [{'id':'call-valid','function':{'name':'f','arguments':'{"city":"Paris"}'}}])

@@ -9,3 +9,7 @@ Ruling: installed SuperPower helper scripts/worktree skill are absent. Existing 
 Baseline: full pytest 232 passed in 5.84s. Task1 in progress.
 
 Task1: RED 15 request/error cases failed as expected; implemented strict booleans, nullable defaults, parameter paths and classified SDK-safe errors. Corrected test expectations to the plan's SSE literal projection (401 invalid_prompt,503 server_error). Installed SDK parameter types independently confirm nullable metadata/include/background/parallel/truncation. Ruling: tools/tool_choice null are supported-subset convenience defaults despite SDK parameter annotations being non-null; effective normalized tools/choice are returned, no unsupported upstream behavior is implied.
+
+Task1: complete. Full pytest247 passed; commit4722f08.
+
+Task2: RED9 policy cases; normalized strict schemas, valid fallback/null/empty definitions, offline refs/finite JSON, 64-call policy and all-results-before-generation implemented. Updated old local-ref unit fixture to include the now-required call_id. Ruling: reject resource-scoping $id/anchors/dynamic refs explicitly, because root-only pointers would otherwise be misinterpreted and offline validation must not resolve other resources. Default schema annotations remain data, not subschemas.

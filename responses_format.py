@@ -1,16 +1,15 @@
 """Responses wire models and Item conversion, independent of HTTP/execution."""
 from copy import deepcopy
 import json
-import re
 import time
 import uuid
 
-from jsonschema import Draft202012Validator, SchemaError, ValidationError as SchemaValidationError
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from chat_types import ChatResult
 from image_inputs import normalize_images
 from responses_errors import ResponseError
+from responses_tools import normalize_tools, validate_choice, validate_call_batch, pending_calls, json_arguments
 from token_counter import count_text
 
 
@@ -66,57 +65,13 @@ class ResponsesRequest(BaseModel):
             raise ResponseError('include and automatic truncation are not supported')
         if len(self.metadata) > 16 or any(len(k) > 64 or len(v) > 512 for k, v in self.metadata.items()):
             raise ResponseError('metadata exceeds supported limits', param='metadata')
-        if len(self.tools) > 64:
-            raise ResponseError('Too many function tools', param='tools')
-        names = set()
-        for tool in self.tools:
-            if (tool.get('type') != 'function' or not isinstance(tool.get('name'), str)
-                    or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', tool['name'])):
-                raise ResponseError('Only named function tools are supported', param='tools')
-            if ('strict' in tool and not isinstance(tool['strict'], bool)
-                    or 'description' in tool and not isinstance(tool['description'], str)
-                    or 'parameters' in tool and not isinstance(tool['parameters'], dict)):
-                raise ResponseError('Invalid function tool field type', param='tools')
-            if set(tool) - {'type', 'name', 'description', 'parameters', 'strict'}:
-                raise ResponseError('Unsupported function tool field', param='tools')
-            if tool['name'] in names: raise ResponseError('Duplicate function names', param='tools')
-            names.add(tool['name'])
-            schema = tool.get('parameters') or {'type': 'object', 'properties': {}}
-            if len(json.dumps(schema).encode()) > 262144:
-                raise ResponseError('Function schema is too large', 413, param='tools')
-            def check_refs(value, depth=0):
-                if depth > 64: raise ResponseError('Function schema is too deeply nested')
-                if isinstance(value, dict):
-                    for key, item in value.items():
-                        if key in ('$ref', '$dynamicRef') and (not isinstance(item, str) or not item.startswith('#/')):
-                            raise ResponseError('External schema references are unsupported')
-                        if key in ('$ref', '$dynamicRef'):
-                            target = schema
-                            try:
-                                for segment in item[2:].split('/'):
-                                    segment = segment.replace('~1', '/').replace('~0', '~')
-                                    target = target[int(segment)] if isinstance(target, list) else target[segment]
-                                if not isinstance(target, (dict, bool)): raise ValueError()
-                            except (KeyError, IndexError, TypeError, ValueError):
-                                raise ResponseError('Function schema reference has no schema target', param='tools') from None
-                        check_refs(item, depth + 1)
-                elif isinstance(value, list):
-                    for item in value: check_refs(item, depth + 1)
-            check_refs(schema)
-            try: Draft202012Validator.check_schema(schema)
-            except SchemaError: raise ResponseError('Invalid function parameter schema', param='tools') from None
-        if isinstance(self.tool_choice, str):
-            if self.tool_choice not in ('auto', 'none', 'required'): raise ResponseError('Unsupported tool_choice')
-            if self.tool_choice == 'required' and not self.tools: raise ResponseError('tool_choice requires function tools')
-        elif (set(self.tool_choice) != {'type', 'name'} or self.tool_choice.get('type') != 'function'
-              or not isinstance(self.tool_choice.get('name'), str)
-              or self.tool_choice.get('name') not in names):
-            raise ResponseError('tool_choice must name an available function')
+        self.tools = normalize_tools(self.tools)
+        validate_choice(self.tools, self.tool_choice)
         return self
 
     def chat_tools(self):
         return [{'type': 'function', 'function': {'name': t['name'], 'description': t.get('description', ''),
-                 'parameters': t.get('parameters') or {'type': 'object', 'properties': {}}}} for t in self.tools]
+                 'parameters': t['parameters']}} for t in self.tools]
 
     def chat_choice(self):
         if isinstance(self.tool_choice, dict): return {'type': 'function', 'function': {'name': self.tool_choice['name']}}
@@ -144,7 +99,7 @@ def normalize_input(request: ResponsesRequest, history: list[dict]):
                 parts.append({'type': 'image_url', 'image_url': {'url': part['image_url']}})
             else: raise ResponseError('Unsupported content part; use input_text/input_image', param='input')
         return parts
-    for item in items:
+    for item_index, item in enumerate(items):
         kind = item.get('type', 'message')
         if kind == 'message':
             role = item.get('role')
@@ -153,8 +108,8 @@ def normalize_input(request: ResponsesRequest, history: list[dict]):
         elif kind == 'function_call':
             call_id, name, arguments = item.get('call_id'), item.get('name'), item.get('arguments')
             if not all(isinstance(x, str) and x for x in (call_id, name, arguments)) or call_id in known:
-                raise ResponseError('Invalid or duplicate function call')
-            try: json.loads(arguments)
+                raise ResponseError('Invalid or duplicate function call', param=f'input[{item_index}].call_id')
+            try: json_arguments(arguments)
             except ValueError: raise ResponseError('Function call arguments must be JSON') from None
             known[call_id] = name
             messages.append({'role': 'assistant', 'content': '', 'tool_calls': [
@@ -162,7 +117,7 @@ def normalize_input(request: ResponsesRequest, history: list[dict]):
         elif kind == 'function_call_output':
             call_id = item.get('call_id')
             if not isinstance(call_id, str) or call_id not in known or call_id in resolved:
-                raise ResponseError('Function output does not match an unresolved call_id', param='input')
+                raise ResponseError('Function output does not match an unresolved call_id', param=f'input[{item_index}].call_id')
             resolved.add(call_id)
             messages.append({'role': 'tool', 'tool_call_id': call_id, 'content': content_parts(item.get('output'))})
         elif kind == 'reasoning':
@@ -170,6 +125,8 @@ def normalize_input(request: ResponsesRequest, history: list[dict]):
                 raise ResponseError('Encrypted reasoning state is not supported')
             # Public reasoning is presentation, not an opaque model-state token.
         else: raise ResponseError('Unsupported input Item type', param='input')
+    if pending_calls(history + messages):
+        raise ResponseError('All pending function results are required before generation', param='input')
     roles = [m['role'] for m in messages]
     # Function outputs may carry screenshots, while other unsupported roles may not.
     for m in messages:
@@ -182,23 +139,9 @@ def normalize_input(request: ResponsesRequest, history: list[dict]):
     return normalized, attachments
 
 
-def validate_calls(request, calls):
-    if len(calls) > 1: raise ResponseError('Upstream returned unsupported parallel function calls', 502)
-    tools = {t['name']: t for t in request.tools}
-    if request.tool_choice == 'required' or isinstance(request.tool_choice, dict):
-        if not calls: raise ResponseError('Upstream did not provide the required function call', 502)
-    for call in calls:
-        fn = call['function']; tool = tools.get(fn['name'])
-        if tool is None or request.tool_choice == 'none': raise ResponseError('Upstream returned an unrequested function', 502)
-        if isinstance(request.tool_choice, dict) and fn['name'] != request.tool_choice['name']:
-            raise ResponseError('Upstream selected a different function', 502)
-        try:
-            args = json.loads(fn['arguments'])
-            # Responses function schemas are strict by default unless explicitly disabled.
-            if tool.get('strict') is not False:
-                Draft202012Validator(tool.get('parameters') or {'type': 'object'}).validate(args)
-        except (ValueError, SchemaValidationError, RecursionError):
-            raise ResponseError('Upstream function arguments failed schema validation', 502) from None
+def validate_calls(request, calls, *, complete=True):
+    validate_call_batch(request.tools, request.tool_choice, calls,
+                        parallel=request.parallel_tool_calls, complete=complete)
 
 
 def output_items(result: ChatResult):
