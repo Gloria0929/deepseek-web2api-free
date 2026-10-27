@@ -20,7 +20,7 @@ class ImageBodyLimit:
 
     async def __call__(self, scope, receive, send):
         path = scope.get('path', '')
-        if scope['type'] != 'http' or path not in ('/v1/chat/completions', '/v1/messages'):
+        if scope['type'] != 'http' or path not in ('/v1/chat/completions', '/v1/messages', '/v1/responses'):
             return await self.app(scope, receive, send)
         limit = ImageLimits.from_env().max_request_bytes
         error = ImageError('JSON request exceeds byte limit', 413)

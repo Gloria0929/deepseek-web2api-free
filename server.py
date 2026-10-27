@@ -29,6 +29,9 @@ from starlette.concurrency import run_in_threadpool
 from image_inputs import ImageAttachment, ImageError, normalize_images
 from image_http import ImageBodyLimit, image_error_response
 from turn_preparation import prepare_turn
+from chat_service import ChatService
+from chat_runtime import (prepare_account, thread_step as _thread_step,
+    iterate_upstream as _iterate_upstream, AccountStreamingResponse as _AccountStreamingResponse)
 
 from adapter import (
     DeepSeekAdapter,
@@ -414,6 +417,7 @@ class AcquiredAccount:
         self._cached_session: ChatSession | None = None
         self._released = False
         self._pending_image_files: dict[str, str] | None = None
+        self._seed_image_files: dict[str, str] = {}
         credential_material = str(getattr(acct, 'token', '')) + '\0' + str(getattr(acct, 'cookies', ''))
         self._credential_fingerprint = hashlib.sha256(credential_material.encode()).hexdigest()
         # If we have a cache key, try to reuse the existing session first.
@@ -501,7 +505,18 @@ class AcquiredAccount:
 
     @property
     def image_files(self) -> dict[str, str]:
-        return dict(self._cached_session.image_files) if self._cached_session else {}
+        return dict(self._cached_session.image_files) if self._cached_session else dict(self._seed_image_files)
+
+    @property
+    def credential_fingerprint(self) -> str:
+        return self._credential_fingerprint
+
+    @property
+    def prepared_image_files(self) -> dict[str, str]:
+        return dict(self._pending_image_files) if self._pending_image_files is not None else self.image_files
+
+    def seed_image_files(self, files: dict[str, str]) -> None:
+        self._seed_image_files = dict(files)
 
     def stage_image_files(self, files: dict[str, str]) -> None:
         self._pending_image_files = files
@@ -656,46 +671,8 @@ def _extract_text(content: Union[str, list[ContentPart], None]) -> str:
 
 def _build_prompt(messages: list[ChatMessage], tools: list[ToolDef] | None = None,
                   tool_choice: str | dict | None = None) -> str:
-    """Build a prompt string from messages, injecting tool definitions if present."""
-    parts = []
-
-    tool_prompt_text = None
-    if tools:
-        tool_prompt_text = build_dsml_tool_prompt([t.model_dump() for t in tools], tool_choice)
-
-    has_system_message = any(m.role == "system" for m in messages)
-    tool_injected = False
-
-    for m in messages:
-        if m.role == "system":
-            text = _extract_text(m.content)
-            if tool_prompt_text and not tool_injected:
-                text = text + "\n\n" + tool_prompt_text if text else tool_prompt_text
-                tool_injected = True
-            if text:
-                parts.append(f"System: {text}")
-        elif m.role == "user":
-            parts.append(f"User: {_extract_text(m.content)}")
-        elif m.role == "assistant":
-            segs = []
-            text = _extract_text(m.content)
-            if text:
-                segs.append(text)
-            if m.tool_calls:
-                dsml = format_tool_calls_for_prompt([tc.model_dump() for tc in m.tool_calls])
-                if dsml:
-                    segs.append(dsml)
-            if segs:
-                parts.append(f"Assistant: {' '.join(segs)}")
-        elif m.role == "tool":
-            result = _extract_text(m.content)
-            prefix = f"Tool result (call_id={m.tool_call_id}):" if m.tool_call_id else "Tool result:"
-            parts.append(f"{prefix} {result[:1000]}")
-
-    if tool_prompt_text and not has_system_message:
-        parts.insert(0, f"System: {tool_prompt_text}")
-
-    return "\n".join(parts)
+    return ChatService.build_prompt([m.model_dump() for m in messages],
+        [t.model_dump() for t in tools] if tools else None, tool_choice)
 
 
 # ---- OpenAI SSE helpers ----
@@ -880,90 +857,10 @@ async def messages(req: AnthropicRequest, request: Request):
 
 
 async def _prepare_stream_account(prompt, attachments, cache_key, thinking, model_type):
-    # Raw Task.cancel can interrupt an await while its worker keeps running.
-    # The worker owns cleanup until it atomically hands off a finished result.
-    lock = threading.Lock()
-    cancelled = threading.Event()
-    completed = []
-    def prepare():
-        acquired = _acquire(cache_key=cache_key)
-        handed_off = False
-        try:
-            if cancelled.is_set():
-                return None
-            turn = prepare_turn(acquired, prompt, attachments, thinking=thinking,
-                                model_type=model_type or DEFAULT_MODEL_TYPE)
-            with lock:
-                if not cancelled.is_set():
-                    completed.append(acquired)
-                    handed_off = True
-            return acquired, turn
-        except Exception as error:
-            if not isinstance(error, ImageError):
-                pool.mark_error(acquired.acct, str(error))
-            raise
-        finally:
-            if not handed_off:
-                acquired.release()
-    try:
-        return await run_in_threadpool(prepare)
-    except BaseException:
-        with lock:
-            cancelled.set()
-            owned = completed.pop() if completed else None
-        if owned is not None:
-            owned.release()
-        raise
-
-
-async def _thread_step(function, *args):
-    """A cancelled reader must drain its in-flight thread before cleanup."""
-    worker = asyncio.create_task(run_in_threadpool(function, *args))
-    try:
-        return await asyncio.shield(worker)
-    except asyncio.CancelledError:
-        while not worker.done():
-            try:
-                await asyncio.shield(worker)
-            except asyncio.CancelledError:
-                continue
-            except Exception:
-                break
-        if not worker.cancelled():
-            worker.exception()  # retrieve a failure while preserving cancellation
-        raise
-
-
-async def _iterate_upstream(iterator):
-    end = object()
-    try:
-        while True:
-            token = await _thread_step(next, iterator, end)
-            if token is end:
-                break
-            yield token
-    finally:
-        close = getattr(iterator, 'close', None)
-        if close is not None:
-            await _thread_step(close)
-
-
-class _AccountStreamingResponse(StreamingResponse):
-    """Release even if the response is cancelled before its generator starts."""
-    def __init__(self, acquired, *args, **kwargs):
-        self.acquired = acquired
-        super().__init__(*args, **kwargs)
-
-    async def __call__(self, scope, receive, send):
-        try:
-            await super().__call__(scope, receive, send)
-        finally:
-            try:
-                close = getattr(self.body_iterator, 'aclose', None)
-                if close is not None:
-                    await close()
-            finally:
-                self.acquired.release()
+    return await prepare_account(lambda: _acquire(cache_key=cache_key),
+        lambda acquired: prepare_turn(acquired, prompt, attachments, thinking=thinking,
+                                      model_type=model_type or DEFAULT_MODEL_TYPE),
+        lambda acquired, error: pool.mark_error(acquired.acct, str(error)), runner=run_in_threadpool)
 
 
 def _anthropic_nonstream(msg_id: str, prompt: str, tool_names: list[str],
@@ -978,10 +875,8 @@ def _anthropic_nonstream(msg_id: str, prompt: str, tool_names: list[str],
         eff, ds_id = turn.prompt, turn.session_id
         t0 = time.time()
         ready_out: dict = {}
-        content, thinking = acq.adapter.chat(ds_id, eff, model_type=model_type,
-                                              thinking_enabled=thinking_mode, search_enabled=search_enabled,
-                                              parent_message_id=acq.parent_message_id,
-                                              ready_out=ready_out, **turn.completion_options())
+        content, thinking = ChatService.invoke(acq, turn, dict(model_type=model_type,
+            thinking_enabled=thinking_mode, search_enabled=search_enabled), ready_out)
         if ready_out.get("response_message_id") is not None:
             acq.record_message_id(ready_out["response_message_id"],
                                   ready_out.get("session_id"),
@@ -1044,12 +939,7 @@ async def _anthropic_stream(msg_id: str, prompt: str, tool_names: list[str],
         try:
             async with aclosing(_iterate_upstream(stream_response(
                 msg_id, MODEL_NAME,
-                acq.adapter.chat_stream(ds_id, eff,
-                                       model_type=model_type,
-                                       thinking_enabled=thinking_mode,
-                                       search_enabled=search_enabled,
-                                       parent_message_id=acq.parent_message_id,
-                                       ready_out=ready_out, **turn.completion_options()),
+                ChatService.tokens(acq, turn, dict(model_type=model_type, thinking_enabled=thinking_mode, search_enabled=search_enabled), ready_out),
                 tool_names,
                 thinking_mode=thinking_mode,
             ))) as upstream:
@@ -1099,10 +989,8 @@ def _handle_nonstream(proxy_id: str, prompt: str, tools: list[ToolDef] | None = 
         eff, ds_id = turn.prompt, turn.session_id
         t0 = time.time()
         ready_out: dict = {}
-        content, thinking = acq.adapter.chat(ds_id, eff, model_type=model_type,
-                                              thinking_enabled=thinking_mode, search_enabled=search_enabled,
-                                              parent_message_id=acq.parent_message_id,
-                                              ready_out=ready_out, **turn.completion_options())
+        content, thinking = ChatService.invoke(acq, turn, dict(model_type=model_type,
+            thinking_enabled=thinking_mode, search_enabled=search_enabled), ready_out)
         if ready_out.get("response_message_id") is not None:
             acq.record_message_id(ready_out["response_message_id"],
                                   ready_out.get("session_id"),
@@ -1235,12 +1123,7 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
                                           ready_out.get("session_id"),
                                           full_prompt=prompt)
 
-            async with aclosing(_iterate_upstream(acq.adapter.chat_stream(ds_id, eff,
-                                                  model_type=model_type,
-                                                  thinking_enabled=thinking_mode,
-                                                  search_enabled=search_enabled,
-                                                  parent_message_id=acq.parent_message_id,
-                                                  ready_out=ready_out, **turn.completion_options()))) as upstream:
+            async with aclosing(_iterate_upstream(ChatService.tokens(acq, turn, dict(model_type=model_type, thinking_enabled=thinking_mode, search_enabled=search_enabled), ready_out))) as upstream:
                 async for token in upstream:
                     if isinstance(token, dict):
                         tt = token.get("__type")
@@ -1388,6 +1271,46 @@ _WEBUI_DIR = (
 )
 
 app.include_router(admin_router)
+
+# Responses owns immutable snapshots independently of the legacy session cache.
+from response_store import ResponseStore
+from responses_errors import ResponseError
+from responses_routes import create_responses_router
+
+RESPONSE_STORE = ResponseStore()
+
+
+def _acquire_response(parent):
+    if parent is None:
+        return _acquire()
+    _UPSTREAM_LIMITER.acquire()
+    try:
+        account = pool.acquire_by_id(parent['account_id'])
+    except BaseException:
+        _UPSTREAM_LIMITER.release()
+        raise
+    if account is None:
+        _UPSTREAM_LIMITER.release()
+        raise ResponseError('Response account is busy or unavailable; retry or resend complete input',
+                            503, 'response_context_unavailable')
+    return AcquiredAccount(account)
+
+
+def _responses_auth(request):
+    _check_api_auth(request)
+    return _check_rate_limit(request)
+
+
+def _responses_controls(model):
+    model_type, thinking, search = resolve_model_controls(MODEL_ROUTER.route_for(model))
+    return dict(model_type=model_type, thinking_enabled=thinking, search_enabled=search)
+
+
+app.include_router(create_responses_router(
+    store=lambda: RESPONSE_STORE, acquire=lambda parent: _acquire_response(parent),
+    authenticate=_responses_auth, scope=_cache_scope, controls=_responses_controls, model=lambda: MODEL_NAME,
+    mark_error=lambda acquired, error: pool.mark_error(acquired.acct, str(error)),
+    record=lambda elapsed, success: get_stats().record(MODEL_NAME, elapsed, success=success)))
 
 
 def _safe_webui_path(rest_of_path: str) -> str | None:

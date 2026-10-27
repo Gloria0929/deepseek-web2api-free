@@ -20,7 +20,8 @@ class PreparedTurn:
 
 
 def prepare_turn(acquired, prompt: str, attachments: tuple[ImageAttachment, ...] = (), *,
-                 thinking: bool = False, model_type: str = 'default') -> PreparedTurn:
+                 thinking: bool = False, model_type: str = 'default',
+                 replay_digests: list[str] | None = None) -> PreparedTurn:
     previous = getattr(acquired, 'previous_prompt', '')
     files = dict(getattr(acquired, 'image_files', {}))
     previous_refs = list(files.values())
@@ -44,4 +45,10 @@ def prepare_turn(acquired, prompt: str, attachments: tuple[ImageAttachment, ...]
         fallback = previous + '\n' + prompt
         if attachments:
             all_refs = previous_refs + all_refs
+    if replay_digests is not None:
+        from image_inputs import ImageError
+        if any(digest not in files for digest in replay_digests):
+            raise ImageError('Image references are unavailable; resend complete input and original images', 409)
+        refs = all_refs = [files[digest] for digest in replay_digests]
+        fallback = prompt
     return PreparedTurn(session, effective, refs, fallback, all_refs)

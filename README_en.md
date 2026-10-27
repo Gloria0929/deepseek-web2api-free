@@ -1,5 +1,7 @@
 # DeepSeek Chat API Proxy
 
+Responses API: standard SDK support for text/images, typed SSE, function calls and immutable `previous_response_id` state. See the [supported subset and examples](docs/responses-api_en.md).
+
 Current version: **v4.0.0** — [Release notes (Chinese)](docs/release-notes/v4.0.0.md): image input, multi-turn context and streaming fixes.
 
 > Convert DeepSeek Chat's (chat.deepseek.com) private API into an **OpenAI / Anthropic compatible** format.
@@ -902,6 +904,8 @@ Install `requirements.txt`; the declared minimum versions are:
 | `wasmtime` | ≥15.0.0 | PoW WASM runtime |
 | `python-dotenv` | ≥1.0.0 | Runtime configuration |
 | `Pillow` | ≥10.4.0 | Image validation |
+| `jsonschema` | ≥4.23.0 | Responses function parameter validation |
+| `openai` | ≥2.0.0 | Standard SDK compatibility tests |
 | `httpx2` | ≥2.0.0 | Test transport compatibility |
 | `httpx` | ≥0.27.0 | Test transport compatibility |
 | `cryptography` | ≥42.0.0 | Credential encryption |

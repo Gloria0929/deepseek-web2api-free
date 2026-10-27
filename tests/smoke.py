@@ -113,6 +113,8 @@ def test_import() -> None:
     _check("/v1/models" in paths, "/v1/models route registered")
     _check("/v1/chat/completions" in paths, "/v1/chat/completions route registered")
     _check("/v1/messages" in paths, "/v1/messages route registered")
+    _check("/v1/responses" in paths, "/v1/responses route registered")
+    _check("/v1/responses/{response_id}" in paths, "Responses retrieve/delete route registered")
     _check("/admin/api/login" in paths, "/admin/api/login route registered")
     _check("/admin/api/stats" in paths, "/admin/api/stats route registered")
     _check(any(p == "/webui" or p.startswith("/webui/") for p in paths),

@@ -13,6 +13,7 @@
 ## 功能特性
 
 - **OpenAI 兼容** — `/v1/chat/completions` 与 `/v1/models` 接口，支持 `stream` 模式
+- **Responses API** — 标准 SDK 的文本/图片、具名 SSE、函数调用和 `previous_response_id` 快照续聊；支持范围与示例见 [Responses 文档](docs/responses-api.md)
 - **图片输入** — 两种协议均支持 JPEG / PNG / WebP、base64 / data URL / 公网 HTTP(S) URL，流式与非流式共用上传处理
 - **Anthropic 兼容** — `/v1/messages` 接口，支持 Claude API 格式
 - **API Key 鉴权** — `/v1/*` 支持 `Authorization: Bearer` / `x-api-key`，适合公网部署
@@ -905,6 +906,8 @@ DeepSeek 的 Token 有效期不明确。认证失败可能是 HTTP 401/403，也
 | `wasmtime` | ≥15.0.0 | PoW WASM 运行时 |
 | `python-dotenv` | ≥1.0.0 | 运行配置加载 |
 | `Pillow` | ≥10.4.0 | 图片格式与像素校验 |
+| `jsonschema` | ≥4.23.0 | Responses 函数参数校验 |
+| `openai` | ≥2.0.0 | 标准 SDK 兼容性验收测试 |
 | `httpx2` | ≥2.0.0 | 测试传输兼容 |
 | `httpx` | ≥0.27.0 | 测试传输兼容 |
 | `cryptography` | ≥42.0.0 | 账号凭证加密 |

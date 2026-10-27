@@ -2,6 +2,14 @@
 
 当前发布版本：**v4.0.0**。中文变更与升级说明见 [docs/release-notes/v4.0.0.md](docs/release-notes/v4.0.0.md)。FastAPI、管理接口及 WebUI 包元信息已同步为 4.0.0；下文旧版本记录保留历史版本号。
 
+## Responses API（2026-10-27）
+
+- `/v1/responses` POST + `/{id}` GET/DELETE 由 `responses_routes.py` 组合注入的运行时依赖，不通过 HTTP 转调聊天补全，不导入 server。
+- `chat_service.py` / `chat_types.py` 提供协议无关的 prompt、执行结果与事件；`chat_runtime.py` 共用取消安全的线程与账号生命周期。原四条聊天路径复用这些基础能力。
+- `responses_format.py` 管理受支持的 Items、函数 schema 校验和 Response；`responses_stream.py` 管理带序号、稳定 ID/索引的 Responses SSE；`response_store.py` 管理有界、调用方隔离的不可变增量快照。
+- `previous_response_id` 重建所属分支，在原账号/凭证上创建全新会话并重放历史图片引用；不要直接复用可变 SESSION_CACHE，否则会污染分支或继承已替换的 instructions。
+- 状态只存内存，祖先删除/过期/回收可能使子链无法续聊；不保存原始图片或凭证。默认限制、SDK 示例和明确不支持的参数见 [Responses 文档](docs/responses-api.md)。
+
 ## 多模态输入（2026-10-26）
 
 - OpenAI `image_url`、Anthropic `image.source`（含用户 tool_result 嵌套图片）均进入共享准备链，四条聊天路径支持静态 JPEG/PNG/WebP。
