@@ -57,6 +57,8 @@ python scripts/run_responses_compat.py --require-all
 
 Missing Node or a driver fails the required CI job; ordinary pytest does not require Node. Real upstream adherence is validated separately.
 
+For an authorized HAR, run `python scripts/verify_responses_live.py --har <capture.har> --report <report.json>`. Both Python and JS run by default; select one with --client python or --client javascript. Credentials stay in a temporary account store; the report contains only check results, failure classes/statuses and anonymous transport counts. Expired credentials/upstream/model failures remain failures with no hidden retry. This sends real upstream requests and is excluded from CI.
+
 Existing JSON logging emits responses_execution for history replay, account wait, session creation, image upload/processing, generation and storage. Streams additionally report first upstream event/visible text. Whitelisted fields contain internal IDs, fixed stages/statuses, durations, counts and safe error codes; no prompt/output, image URL/base64/file ID, tool data or credentials. Logging failure does not affect business cleanup.
 
 Observed cancellation before state commit does not save a snapshot and drains the active worker before releasing resources. A disconnect after commit does not imply successful delivery; TCP delivery and snapshot commit are not atomic.

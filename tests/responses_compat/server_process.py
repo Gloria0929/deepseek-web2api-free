@@ -33,23 +33,24 @@ class ServerHandle:
 
 
 @contextmanager
-def running_server():
+def running_server(*, accounts=None, key=KEY, live=False):
     with tempfile.TemporaryDirectory(prefix='responses-compat-') as directory:
         temp = Path(directory)
-        accounts = temp/'accounts.json'
-        accounts.write_text(json.dumps({'version':1,'accounts':[{'email':'synthetic',
+        account_path = temp/'accounts.json'
+        account_path.write_text(json.dumps(accounts if accounts is not None else {'version':1,'accounts':[{'email':'synthetic',
             'token':'compat-synthetic-credential','cookies':'synthetic=yes'}]}),encoding='utf-8')
-        env = {**os.environ,'ACCOUNT_STORE_PATH':str(accounts),'API_KEY_STORE_PATH':str(temp/'keys.sqlite3'),
-            'API_KEYS':KEY,'ALLOW_UNAUTHENTICATED_API':'false','DEEPSEEK_ADMIN_PASSWORD':'compat-test-admin-password',
+        env = {**os.environ,'ACCOUNT_STORE_PATH':str(account_path),'API_KEY_STORE_PATH':str(temp/'keys.sqlite3'),
+            'API_KEYS':key,'ALLOW_UNAUTHENTICATED_API':'false','DEEPSEEK_ADMIN_PASSWORD':'compat-test-admin-password',
             'HOST':'127.0.0.1','LOG_LEVEL':'CRITICAL','THINKING':'true','SEARCH':'false','MODE':'auto','MODEL_ROUTES':'',
             'CLIENT_RPM_PER_KEY':'0','CLIENT_RPM_PER_IP':'0','PYTHONUTF8':'1','NO_PROXY':'127.0.0.1,localhost'}
         with socket.socket() as probe:
             probe.bind(('127.0.0.1',0)); port = probe.getsockname()[1]
         with (temp/'server.log').open('w',encoding='utf-8') as log:
-            process = subprocess.Popen([sys.executable,'-m','tests.responses_compat.server','--port',str(port)],
+            module = 'tests.responses_compat.live_server' if live else 'tests.responses_compat.server'
+            process = subprocess.Popen([sys.executable,'-m',module,'--port',str(port)],
                 cwd=ROOT,env=env,stdout=log,stderr=subprocess.STDOUT,
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0)
-            handle = ServerHandle(f'http://127.0.0.1:{port}',process)
+            handle = ServerHandle(f'http://127.0.0.1:{port}',process,key)
             try:
                 deadline = time.monotonic()+20
                 while time.monotonic() < deadline:

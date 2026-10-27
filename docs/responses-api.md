@@ -117,6 +117,8 @@ python scripts/run_responses_compat.py --require-all
 
 此命令和 CI 必须执行全部三个客户端，缺 Node 或 SDK 即失败。普通 pytest 不要求 Node。实际上游能否遵从工具/图片请求需单独实时验收。
 
+已准备 HAR 时可运行 `python scripts/verify_responses_live.py --har <HAR路径> --report <报告路径>`，默认验证 Python 与 JS，或用 `--client python` / `--client javascript` 单独选择。凭证仅进入临时账号库；报告只记录检查结果、异常类型/HTTP状态和匿名传输计数。无效凭证、上游拒绝与模型未遵从均算失败，不会隐式重试掩盖结果。此命令会向真实上游发送测试请求，不放入 CI。
+
 诊断使用现有 `LOG_LEVEL` / JSON logger，事件名 `responses_execution`。记录 history_replay、account_wait、session_create、image_upload、image_processing、generation、storage 耗时，以及流式 first_upstream_event/first_output_text；非流式不伪造首 token 时间。字段仅含内部请求/响应 ID、固定阶段/状态、耗时、计数和安全错误码，不含正文、图片 URL/base64、文件 ID、工具参数/结果或凭证。
 
 观察到提交前取消时，不保存快照，并等待在途线程、关闭上游、释放账号与并发槽。提交后发生网络断开不代表客户端已收到终帧，不能承诺网络交付与快照提交原子一致。
