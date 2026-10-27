@@ -1,6 +1,6 @@
 # AGENTS.md — DeepSeek Chat API Proxy (Preview)
 
-当前发布版本：**v4.0.0**。中文变更与升级说明见 [docs/release-notes/v4.0.0.md](docs/release-notes/v4.0.0.md)。FastAPI、管理接口及 WebUI 包元信息已同步为 4.0.0；下文旧版本记录保留历史版本号。
+当前发布版本：**v4.1.0**。中文变更与升级说明见 [docs/release-notes/v4.1.0.md](docs/release-notes/v4.1.0.md)。FastAPI、管理接口及 WebUI 包元信息已同步为 4.1.0；下文旧版本记录保留历史版本号。
 
 ## Responses API（2026-10-27）
 

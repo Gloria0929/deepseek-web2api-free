@@ -214,7 +214,7 @@ def _check_rate_limit(request: Request) -> dict:
     return headers
 
 
-app = FastAPI(title="DeepSeek Chat API", version="4.0.0")
+app = FastAPI(title="DeepSeek Chat API", version="4.1.0")
 app.add_middleware(ImageBodyLimit)
 
 
