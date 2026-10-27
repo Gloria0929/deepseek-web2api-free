@@ -1,0 +1,2 @@
+# Acceptance SDK version verified with strict response parsing; not a runtime pin.
+openai==3.39.0

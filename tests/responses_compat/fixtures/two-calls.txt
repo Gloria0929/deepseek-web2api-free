@@ -1,0 +1,1 @@
+<tool_calls><invoke name="weather"><parameter name="city"><![CDATA[Paris]]></parameter></invoke><invoke name="weather"><parameter name="city"><![CDATA[London]]></parameter></invoke></tool_calls>

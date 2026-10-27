@@ -1,0 +1,3 @@
+{
+  "required_groups": ["text", "stream", "aggregate", "images", "state_and_replay", "tools", "errors", "failures", "abort", "timeout"]
+}

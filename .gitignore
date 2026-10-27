@@ -20,4 +20,5 @@ webui-new/.vite/
 
 # Test artefacts
 .pytest_cache/
+tests/responses_compat/node_modules/
 *.egg-info/

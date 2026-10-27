@@ -21,3 +21,9 @@ Task3: RED4 batch/SDK cases; opt-in complete tool batches, cumulative validation
 Task3: complete. Full pytest259 passed, smoke passed; commitf51ed8d.
 
 Task4: complete. RED4 generic observation cases plus route integration RED; full pytest264 passed. Added generic optional timing callbacks and request-local whitelisted logging; first-upstream and first-visible markers, finish-once and cancellation cleanup callbacks. Logger failures do not affect business results; synthetic input/output/URL sentinels absent. No database/UI/global diagnostic buffer.
+
+Task4 commit9ded0d8.
+
+Task5: RED2 HTTP harness/owned process cases, then GREEN. Real uvicorn loopback app retains actual pool/semaphore/state/parser and swaps only upstream adapters. Diagnosed inherited SOCKS proxy requirement: loopback SDK clients explicitly trust_env=false. Graceful authenticated test-only shutdown closes Windows log handles. SDK driver scenario selection initially mistook historical batch prompt for a fresh tool request; fixed test backend's last-message discrimination, not product behavior.
+
+Task5 SDK evidence: Python3.39.0 sync + async and JS7.45.0, each10 required groups PASS over actual HTTP. Groups include raw and aggregate streams, image append/replay, tool-result images/manual Items/reverse calls, seven HTTP error statuses, invalid second/later batches, abort before upstream/text/tool and timeouts before headers/text/tool, followed by successful recovery. Shared manifest enforced, missing driver or Node is failure. JS dependency isolated and locked. No live credentials in fixtures or CI.

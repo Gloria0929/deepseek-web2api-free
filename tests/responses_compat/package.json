@@ -1,0 +1,11 @@
+{
+  "name": "ds2api-responses-compat",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "openai": "7.45.0"
+  }
+}
