@@ -1,5 +1,7 @@
 # DeepSeek Chat API Proxy
 
+当前版本：**v4.0.0** — [中文发布说明](docs/release-notes/v4.0.0.md)：多模态图片输入、多轮上下文与流式修复。
+
 > 将 DeepSeek Chat (chat.deepseek.com) 的私有 API 转换为 OpenAI / Anthropic 兼容格式。
 
 > **🤖 全 AI 生成声明**: 本项目没有一行人工手写代码。所有的 API 端点设计、协议逆向、PoW 求解、SSE 解析、格式映射、文档编写等等全部由 **DeepSeek v4 Flash 模型** + **Claude Code** 协作完成。

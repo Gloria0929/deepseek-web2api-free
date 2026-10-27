@@ -1,5 +1,7 @@
 # DeepSeek Chat API Proxy
 
+Current version: **v4.0.0** — [Release notes (Chinese)](docs/release-notes/v4.0.0.md): image input, multi-turn context and streaming fixes.
+
 > Convert DeepSeek Chat's (chat.deepseek.com) private API into an **OpenAI / Anthropic compatible** format.
 
 > **🤖 Fully AI-Generated Disclaimer**: This project does not contain a single line of human-written code. All API endpoint design, protocol reverse-engineering, PoW solving, SSE parsing, format mapping, and documentation were produced in collaboration between the **DeepSeek v4 Flash model** and **Claude Code**.

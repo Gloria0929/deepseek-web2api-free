@@ -1,5 +1,7 @@
 # AGENTS.md — DeepSeek Chat API Proxy (Preview)
 
+当前发布版本：**v4.0.0**。中文变更与升级说明见 [docs/release-notes/v4.0.0.md](docs/release-notes/v4.0.0.md)。FastAPI、管理接口及 WebUI 包元信息已同步为 4.0.0；下文旧版本记录保留历史版本号。
+
 ## 多模态输入（2026-10-26）
 
 - OpenAI `image_url`、Anthropic `image.source`（含用户 tool_result 嵌套图片）均进入共享准备链，四条聊天路径支持静态 JPEG/PNG/WebP。
