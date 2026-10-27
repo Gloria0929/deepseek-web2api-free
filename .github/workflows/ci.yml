@@ -8,6 +8,31 @@ on:
   workflow_dispatch:
 
 jobs:
+  responses-compat:
+    name: Responses SDK compatibility (HTTP)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            tests/responses_compat/requirements.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: tests/responses_compat/package-lock.json
+      - name: Install acceptance dependencies
+        run: |
+          python -m pip install -r requirements.txt -r tests/responses_compat/requirements.txt
+          npm ci --prefix tests/responses_compat --no-audit --no-fund
+      - name: Verify all SDKs through real HTTP
+        run: python scripts/run_responses_compat.py --require-all
+
   smoke:
     name: Smoke test
     runs-on: ubuntu-latest

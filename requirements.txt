@@ -5,6 +5,7 @@ wasmtime>=15.0.0
 python-dotenv>=1.0.0
 Pillow>=10.4.0
 jsonschema>=4.23.0
+referencing>=0.28.4
 
 # Test client transport: starlette 0.40+ / FastAPI 0.110+ moved the
 # TestClient onto the `httpx2` fork. Install it explicitly so the

@@ -9,6 +9,9 @@
 - `responses_format.py` 管理受支持的 Items、函数 schema 校验和 Response；`responses_stream.py` 管理带序号、稳定 ID/索引的 Responses SSE；`response_store.py` 管理有界、调用方隔离的不可变增量快照。
 - `previous_response_id` 重建所属分支，在原账号/凭证上创建全新会话并重放历史图片引用；不要直接复用可变 SESSION_CACHE，否则会污染分支或继承已替换的 instructions。
 - 状态只存内存，祖先删除/过期/回收可能使子链无法续聊；不保存原始图片或凭证。默认限制、SDK 示例和明确不支持的参数见 [Responses 文档](docs/responses-api.md)。
+- 第二阶段：`responses_tools.py` 管理 strict 规范化/有效定义/批次校验；显式 parallel_tool_calls=true 支持最多64次调用，默认false。所有待解决结果按 call_id 关联并须完整提供；完整 DSML 批次在发出函数 Item 之前整体校验。
+- `execution_observer.py` 是通用可选计时回调，`responses_observability.py` 仅投影白名单诊断字段；共享准备链不得导入 Responses。错误由 responses_errors 统一分类并投影为 SDK 可解析的 SSE code。
+- `python scripts/run_responses_compat.py --require-all` 在回环 uvicorn 服务上验证 Python sync/async 与 JS SDK，fixture 仅替换上游并保留实际池/状态/parser；测试依赖与 WebUI 隔离，Node/驱动缺失不能跳过。实际 HAR 只用于临时实时验收，禁止进入 fixtures/CI。
 
 ## 多模态输入（2026-10-26）
 
