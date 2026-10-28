@@ -43,7 +43,32 @@ Reconstructed history is also subject to the configured image count limit. Full 
 
 Streaming emits named Responses SSE events with monotonic sequence numbers, stable Item IDs and output/content indexes, including output text, reasoning text and function argument deltas. SDK stream aggregation is supported. Raw upstream reasoning is represented as `reasoning_text`, without invented summaries or encrypted state. Thinking and search follow server `THINKING`, `SEARCH` and `MODEL_ROUTES` policies.
 
-Unsupported features return explicit errors: hosted tools, background processing, conversations, native reasoning controls/encrypted reasoning, structured output formats, include, automatic truncation, explicit output token budgets, temperature and top_p. Conversations API, background cancellation, WebSockets, audio and PDF are outside this phase.
+The request boundary consumes these known client hints without forwarding, logging or persisting them as conversation state:
+
+| Field | Accepted values and behavior |
+|---|---|
+| `prompt_cache_key` | String/null, at most 512 characters; ignored optimization hint, never caller identity or session routing |
+| `client_metadata` | JSON object/null, at most 16 KiB when UTF-8 JSON encoded; non-finite numbers rejected |
+| `include` | Empty/null or only `reasoning.encrypted_content`; encrypted state is unavailable and omitted from output |
+| `reasoning.effort` | null or `none/minimal/low/medium/high/xhigh/max/ultra`; server thinking policy still applies |
+| `reasoning.summary` | null or `auto/concise/detailed/none`; no native summary guarantee, response `reasoning` remains null |
+| `text.verbosity` | null or `low/medium/high`; no native length control, plain text format only |
+
+Unknown fields/hints and other include values return 400 with the parameter identified. Hosted tools, tool namespaces, background processing, conversations, foreign encrypted reasoning input, structured output, automatic truncation, explicit output token budgets, temperature and top_p still return errors. Conversations API, background cancellation, WebSockets, audio and PDF are outside this phase.
+
+### Codex CLI
+
+Codex CLI 0.145.0 has been verified for initial streaming and ordinary function roundtrips with a Responses provider pointing to this service's `/v1`. Restrict tools to the supported subset by disabling web search, apps/plugins and multi-agent namespaces:
+
+```toml
+web_search = "disabled"
+[features]
+apps = false
+plugins = false
+multi_agent = false
+```
+
+Set the custom provider's `wire_api = "responses"`, `base_url` and `env_key`, with the environment variable containing this service's API key. Any configured MCP/external tools must also use supported flat function definitions; acceptance uses an empty MCP configuration. Client hints can be sent normally without an intermediate field-removal layer. This does not imply support for every Codex plugin or built-in tool.
 
 ## Client acceptance and diagnostics
 
@@ -56,6 +81,8 @@ python scripts/run_responses_compat.py --require-all
 ```
 
 Missing Node or a driver fails the required CI job; ordinary pytest does not require Node. Real upstream adherence is validated separately.
+
+`python scripts/verify_codex_responses.py --cli <Codex executable>` additionally runs the installed CLI in an owned temporary workspace with its read-only sandbox. It checks initial SSE, a synthetic-file read through a function call and result replay, `store=false`, and resource cleanup. Only the upstream is scripted; no HAR is used. This optional acceptance is separate from ordinary pytest and does not establish real upstream tool adherence.
 
 For an authorized HAR, run `python scripts/verify_responses_live.py --har <capture.har> --report <report.json>`. Both Python and JS run by default; select one with --client python or --client javascript. Credentials stay in a temporary account store; the report contains only check results, failure classes/statuses and anonymous transport counts. The verifier and SDK do not add retries; the proxy adapter still applies `DEEPSEEK_RATE_LIMIT_RETRY_DELAYS` to upstream rate limits and its existing empty-response retry policy. Final credential, upstream or model-adherence failures remain visible in the report. This sends real upstream requests and is excluded from CI.
 

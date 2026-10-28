@@ -47,7 +47,12 @@ class ScriptedAdapter:
             if 'case:rate' in last: raise RateLimitError('Synthetic private limit detail')
             if 'case:upstream_fail' in last: raise RuntimeError('Synthetic private failure')
             if 'case:slow_first' in last: time.sleep(.8)
-            if 'case:batch' in last or 'case:slow_tool' in last:
+            if 'case:codex_tool' in prompt:
+                if 'Tool result (call_id=' in prompt:
+                    text = 'CODEX-PROBE' if 'CODEX-PROBE' in prompt.split('Tool result (call_id=')[-1] else 'missing probe'
+                else:
+                    text = '<tool_calls><invoke name="shell_command"><parameter name="command">cat probe.txt</parameter></invoke></tool_calls>'
+            elif 'case:batch' in last or 'case:slow_tool' in last:
                 second = '123' if 'invalid' in last else 'London'
                 text = (Path(__file__).parent/'fixtures/two-calls.txt').read_text(encoding='utf-8').strip().replace('London',second)
             elif 'case:later_invalid' in last:

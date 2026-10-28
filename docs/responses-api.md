@@ -103,7 +103,32 @@ answer = client.responses.create(model="deepseek-chat", previous_response_id=res
 
 流式使用具名 Responses SSE 事件，带单调递增的 `sequence_number`、稳定的 Item ID 和索引。支持 created/in_progress、输出 Item/内容段 added/delta/done、函数参数 delta/done、completed/failed。原始 DeepSeek 推理映射为 `reasoning_text`，不伪造 summary 或 encrypted_content。思考/搜索由服务端 `THINKING`、`SEARCH` 和 `MODEL_ROUTES` 策略决定。
 
-明确拒绝 hosted tools、`background=true`、`conversation`、非空 `reasoning` 控制、加密推理、结构化输出格式、`include`、自动截断，以及显式 `max_output_tokens` / `temperature` / `top_p`。不提供 Conversations API、取消后台任务、WebSocket、音频或 PDF。代理不会默默接受这些参数并假装上游已经执行。
+为兼容 Codex CLI 等客户端，请求边界接收以下提示并消费，不转发至上游、写入 prompt 或保存为会话状态：
+
+| 参数 | 接受范围与实际行为 |
+|---|---|
+| `prompt_cache_key` | 字符串/null，最多 512 字符；忽略缓存优化提示，不参与调用方身份或会话关联 |
+| `client_metadata` | JSON 对象/null，UTF-8 JSON 编码最多 16 KiB，禁止非有限数值；不记入诊断日志 |
+| `include` | 空数组/null，或仅包含 `reasoning.encrypted_content`；上游没有加密状态，响应省略 `encrypted_content` |
+| `reasoning.effort` | null 或 `none/minimal/low/medium/high/xhigh/max/ultra`；仅作兼容提示，仍由服务端思考策略决定 |
+| `reasoning.summary` | null 或 `auto/concise/detailed/none`；不承诺摘要生成，响应 `reasoning` 为 null |
+| `text.verbosity` | null 或 `low/medium/high`；不提供原生长度控制，`text.format` 仍只支持普通文本 |
+
+未知字段、未知提示值和其他 `include` 值仍返回 400，并标出参数。明确拒绝 hosted tools、工具 namespace、`background=true`、`conversation`、外部加密推理状态输入、结构化输出格式、自动截断，以及显式 `max_output_tokens` / `temperature` / `top_p`。不提供 Conversations API、取消后台任务、WebSocket、音频或 PDF。
+
+### Codex CLI
+
+已用 Codex CLI 0.145.0 验证流式首轮与普通函数调用回合，使用 Responses provider 指向本服务 `/v1`。为限制在受支持的工具范围，客户端需关闭联网搜索、应用/插件和多代理 namespace：
+
+```toml
+web_search = "disabled"
+[features]
+apps = false
+plugins = false
+multi_agent = false
+```
+
+配置自定义 provider 的 `wire_api = "responses"`、`base_url` 和 `env_key`，环境变量设为本服务 API key。已配置的 MCP 等外部工具也须限定为当前支持的扁平 function 定义；本次验收使用空 MCP 配置。上述提示参数可由客户端正常发送，无需在中间层删字段。此范围不代表完整支持 Codex CLI 的所有插件或内置工具。
 
 ## 客户端验收与诊断
 
@@ -116,6 +141,8 @@ python scripts/run_responses_compat.py --require-all
 ```
 
 此命令和 CI 必须执行全部三个客户端，缺 Node 或 SDK 即失败。普通 pytest 不要求 Node。实际上游能否遵从工具/图片请求需单独实时验收。
+
+另有 `python scripts/verify_codex_responses.py --cli <Codex可执行文件>`，要求本机安装 Codex CLI。它在独立临时目录和只读 sandbox 下运行真实 CLI，验证首轮 SSE、读取合成文件的函数调用与结果重放，以及 `store=false` 和资源释放；只替换上游，不使用 HAR。此可选验收不纳入普通 pytest，也不表示真实上游的工具遵从性已验证。
 
 已准备 HAR 时可运行 `python scripts/verify_responses_live.py --har <HAR路径> --report <报告路径>`，默认验证 Python 与 JS，或用 `--client python` / `--client javascript` 单独选择。凭证仅进入临时账号库；报告只记录检查结果、异常类型/HTTP状态和匿名传输计数。验收脚本和 SDK 不额外重试；代理适配器仍按 `DEEPSEEK_RATE_LIMIT_RETRY_DELAYS` 对上游限流退避，并对空响应按现有策略重试。最终的凭证、上游或模型遵从性失败会在报告中体现。此命令会向真实上游发送测试请求，不放入 CI。
 

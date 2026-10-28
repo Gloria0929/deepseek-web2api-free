@@ -20,7 +20,7 @@ def test_input_items_images_and_function_results():
 
 
 @pytest.mark.parametrize('kwargs', [dict(background=True),
-    dict(max_output_tokens=20), dict(reasoning={'effort':'high'}), dict(text={'format':{'type':'json_schema'}}),
+    dict(max_output_tokens=20), dict(reasoning={'effort':'invented'}), dict(text={'format':{'type':'json_schema'}}),
     dict(tools=[{'type':'web_search'}]), dict(tools=[{'type':'function','name':'x','parameters':{'$ref':'https://private/schema'}}])])
 def test_unsupported_guarantees_are_explicit(kwargs):
     with pytest.raises((ResponseError, ValidationError)):

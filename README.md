@@ -294,7 +294,7 @@ data: [DONE]
 
 ### `/v1/responses`
 
-支持创建响应，以及按 ID 检索和删除已存储响应。标准 SDK 的文本、图片、流式、多轮与函数调用示例，以及状态和能力边界，见 [Responses 文档](docs/responses-api.md)。
+支持创建响应，以及按 ID 检索和删除已存储响应。兼容 Codex CLI 的缓存、客户端元数据和推理提示参数；已验证关闭扩展工具后的普通函数回合。标准 SDK 示例、Codex 配置和能力边界，见 [Responses 文档](docs/responses-api.md)。
 
 ### `POST /v1/messages`
 

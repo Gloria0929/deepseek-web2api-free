@@ -7,6 +7,7 @@
 - `/v1/responses` POST + `/{id}` GET/DELETE 由 `responses_routes.py` 组合注入的运行时依赖，不通过 HTTP 转调聊天补全，不导入 server。
 - `chat_service.py` / `chat_types.py` 提供协议无关的 prompt、执行结果与事件；`chat_runtime.py` 共用取消安全的线程与账号生命周期。原四条聊天路径复用这些基础能力。
 - `responses_format.py` 管理受支持的 Items、函数 schema 校验和 Response；`responses_stream.py` 管理带序号、稳定 ID/索引的 Responses SSE；`response_store.py` 管理有界、调用方隔离的不可变增量快照。
+- `responses_compat.py` 在请求边界消费有界的 Codex 缓存/客户端元数据及 reasoning/include/verbosity 提示；不进入 prompt、日志或快照，不改变调用方身份、服务端思考策略，也不伪造加密状态。未知功能参数仍严格拒绝。可选真实 CLI 验收见 `scripts/verify_codex_responses.py`，工具范围及限制以 Responses 文档为准。
 - `previous_response_id` 重建所属分支，在原账号/凭证上创建全新会话并重放历史图片引用；不要直接复用可变 SESSION_CACHE，否则会污染分支或继承已替换的 instructions。
 - 状态只存内存，祖先删除/过期/回收可能使子链无法续聊；不保存原始图片或凭证。默认限制、SDK 示例和明确不支持的参数见 [Responses 文档](docs/responses-api.md)。
 - 第二阶段：`responses_tools.py` 管理 strict 规范化/有效定义/批次校验；显式 parallel_tool_calls=true 支持最多64次调用，默认false。所有待解决结果按 call_id 关联并须完整提供；完整 DSML 批次在发出函数 Item 之前整体校验。

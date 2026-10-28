@@ -292,7 +292,7 @@ data: [DONE]
 
 ### `/v1/responses`
 
-Create responses and retrieve or delete stored responses by ID. For standard SDK text, image, streaming, conversation and function examples, plus state and capability limits, see the [Responses guide](docs/responses-api_en.md).
+Create responses and retrieve or delete stored responses by ID. Codex CLI cache, client metadata and reasoning hints are accepted; ordinary function roundtrips are verified with extension tools disabled. For SDK examples, Codex configuration and capability limits, see the [Responses guide](docs/responses-api_en.md).
 
 ### `POST /v1/messages`
 

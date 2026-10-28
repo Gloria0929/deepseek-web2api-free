@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from chat_types import ChatResult
 from image_inputs import normalize_images
 from responses_errors import ResponseError
+from responses_compat import normalize_client_options
 from responses_tools import normalize_tools, validate_choice, validate_call_batch, pending_calls, json_arguments
 from token_counter import count_text
 
@@ -42,7 +43,7 @@ class ResponsesRequest(BaseModel):
     @classmethod
     def nullable_defaults(cls, value):
         if not isinstance(value, dict): return value
-        value = dict(value)
+        value = normalize_client_options(value)
         for name, default in {'metadata': {}, 'tools': [], 'include': [], 'tool_choice':'auto',
                 'parallel_tool_calls':False, 'background':False, 'truncation':'disabled'}.items():
             if name in value and value[name] is None: value[name] = deepcopy(default)
@@ -60,8 +61,10 @@ class ResponsesRequest(BaseModel):
             raise ResponseError('Native reasoning effort/summary controls are not supported; use server THINKING policy', param='reasoning')
         if self.text not in (None, {}, {'format': {'type': 'text'}}):
             raise ResponseError('Only plain text output is supported', param='text')
-        if self.include or self.truncation != 'disabled':
-            raise ResponseError('include and automatic truncation are not supported')
+        if self.include:
+            raise ResponseError('Unsupported include value', param='include')
+        if self.truncation != 'disabled':
+            raise ResponseError('Automatic truncation is not supported', param='truncation')
         if len(self.metadata) > 16 or any(len(k) > 64 or len(v) > 512 for k, v in self.metadata.items()):
             raise ResponseError('metadata exceeds supported limits', param='metadata')
         self.tools = normalize_tools(self.tools)
