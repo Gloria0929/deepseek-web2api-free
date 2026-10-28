@@ -1,11 +1,12 @@
 # AGENTS.md — DeepSeek Chat API Proxy (Preview)
 
-当前发布版本：**v4.1.4**。中文变更与升级说明见 [docs/release-notes/v4.1.4.md](docs/release-notes/v4.1.4.md)。FastAPI、管理接口及 WebUI 包元信息已同步为 4.1.4；下文旧版本记录保留历史版本号。
+当前发布版本：**v4.1.5**。中文变更与升级说明见 [docs/release-notes/v4.1.5.md](docs/release-notes/v4.1.5.md)。FastAPI、管理接口及 WebUI 包元信息已同步为 4.1.5；下文旧版本记录保留历史版本号。
 
 ## Responses API（2026-10-27）
 
 - 工具解析兼容 `<|DSML|...>` 与全角竖线 `<｜DSML｜...>`，wrapper 支持 `tool_calls` / `tool_call` / `calls`；`parameter string="true"` 保持字符串类型和内容。`tool_dsml.tool_block_end` 提供跳过 CDATA 的原文批次终点，`StreamSieve` 据此等整批闭合再发布，并保留后续正文。不得全局替换命令正文中的字符。复现截图格式的回归见 `tests/test_dsml_variants.py`；真实 CLI 变体验收使用 `scripts/verify_codex_responses.py --dsml-variant --cli <可执行文件>`。
 - Anthropic 非流式正文按是否存在 `tool_calls` 选择 `cleaned` 或原始 `content`，不能使用 `cleaned or content`，否则纯工具响应会回填原始标签。`tests/test_tool_protocol_routes.py` 覆盖三个端点的流式/非流式六条路由及纯工具、正文混合工具、普通回答的正文选择。
+- DSML 起始识别与批次闭合共用 `[|｜]+` 分隔符规则；逐字符输入时须保留尚未完整到达的重复竖线前缀，并受现有缓冲上限约束。不能只在完整文本解析器放宽语法，否则 SSE 会先泄漏正文。重复分隔符回归见 `tests/test_dsml_repeated_separators.py`，路由矩阵覆盖三个端点的单/双/混合竖线。
 
 - `/v1/responses` POST + `/{id}` GET/DELETE 由 `responses_routes.py` 组合注入的运行时依赖，不通过 HTTP 转调聊天补全，不导入 server。
 - `chat_service.py` / `chat_types.py` 提供协议无关的 prompt、执行结果与事件；`chat_runtime.py` 共用取消安全的线程与账号生命周期。原四条聊天路径复用这些基础能力。
@@ -224,7 +225,7 @@
 
 ### 1.3 项目版本
 
-- 当前主线：`v4.1.4`（2026-10-28）— 修复 Anthropic 工具响应正文回填，补齐三端点路由回归；完整变更见 [docs/release-notes/v4.1.4.md](docs/release-notes/v4.1.4.md)。
+- 当前主线：`v4.1.5`（2026-10-28）— 修复重复 DSML 分隔符的流式识别与扫描性能；完整变更见 [docs/release-notes/v4.1.5.md](docs/release-notes/v4.1.5.md)。
 - `v4.1.0`（2026-10-27）— 新增 Responses API、图片续聊、多函数调用和标准 SDK 兼容验收；完整变更见 [docs/release-notes/v4.1.0.md](docs/release-notes/v4.1.0.md)。
 - 历史版本：`v3.3.8`（2026-10-18）— 跟进上游「快速模式 / 专家模式」合并：**收敛为单模型**（`/v1/models` 只列 `MODEL_NAME`，旧名 `deepseek-reasoner` 降为不改行为的别名，思考由 `THINKING` 决定），`model_type` 降级为协议字段，`MODEL_ROUTES` 降级为可选高级覆盖，新增统一决策函数 `resolve_model_controls()`，合并流式/非流式会话缓存键，并修复「客户端每轮只发最新消息」时的多轮失忆；完整变更见 [docs/release-notes/v3.3.8.md](docs/release-notes/v3.3.8.md)
 - `v3.3.6`（2026-10）— 在 v3.3.5 基础上新增 WebUI 客户端 API Key 管理，统一账号池配置，并改进 Windows 启动脚本和 WebUI 依赖构建失败处理；完整变更见 [docs/release-notes/v3.3.6.md](docs/release-notes/v3.3.6.md)

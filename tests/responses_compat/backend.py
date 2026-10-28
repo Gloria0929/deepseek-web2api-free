@@ -52,7 +52,7 @@ class ScriptedAdapter:
                     text = 'CODEX-PROBE' if 'CODEX-PROBE' in prompt.split('Tool result (call_id=')[-1] else 'missing probe'
                 else:
                     if 'case:codex_tool_variant' in prompt:
-                        text = '<｜DSML｜calls><｜DSML｜invoke name="shell_command"><｜DSML｜parameter name="command" string="true">cat probe.txt</｜DSML｜parameter></｜DSML｜invoke></｜DSML｜calls>'
+                        text = '<｜｜DSML｜｜calls><｜｜DSML｜｜invoke name="shell_command"><｜｜DSML｜｜parameter name="command" string="true">cat probe.txt</｜｜DSML｜｜parameter></｜｜DSML｜｜invoke></｜｜DSML｜｜calls>'
                     else:
                         text = '<tool_calls><invoke name="shell_command"><parameter name="command">cat probe.txt</parameter></invoke></tool_calls>'
             elif 'case:batch' in last or 'case:slow_tool' in last:

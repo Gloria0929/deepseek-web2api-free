@@ -54,8 +54,9 @@ def events(response):
 
 @pytest.mark.parametrize('protocol',['responses','messages','chat'])
 @pytest.mark.parametrize('stream',[False,True])
-def test_variant_is_a_tool_call_without_raw_markup_in_all_routes(upstream,protocol,stream):
-    upstream.state.text=report_call()
+@pytest.mark.parametrize('bars',['｜','｜｜','||','|｜|'])
+def test_variant_is_a_tool_call_without_raw_markup_in_all_routes(upstream,protocol,stream,bars):
+    upstream.state.text=report_call(bars=bars)
     with TestClient(server.app) as http: response=post(http,protocol,stream)
     if protocol=='responses':
         rows=events(response) if stream else []

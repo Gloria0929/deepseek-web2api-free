@@ -1,6 +1,6 @@
 # DeepSeek Chat API Proxy
 
-当前版本：**v4.1.4** — [中文发布说明](docs/release-notes/v4.1.4.md)：修复 Anthropic 非流式工具响应回填原始标签，补齐三个端点的路由回归。
+当前版本：**v4.1.5** — [中文发布说明](docs/release-notes/v4.1.5.md)：修复重复 DSML 分隔符的流式识别、标签泄漏及长竖线扫描性能。
 
 > 将 DeepSeek Chat (chat.deepseek.com) 的私有 API 转换为 OpenAI / Anthropic 兼容格式。
 

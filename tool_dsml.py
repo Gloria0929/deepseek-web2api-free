@@ -16,11 +16,31 @@ from typing import Any
 _CDATA_OPEN = "<![CDATA["
 _CDATA_CLOSE = "]]>"
 _WRAPPERS = {'tool_calls', 'tool_call', 'calls'}
+_DSML_PREFIX = r'[|｜]+\s*DSML\s*[|｜]+'
+# Only try the beginning of a separator run. Retrying at every pipe would
+# make a long ordinary run without DSML quadratic in a single search.
+_DSML_START = re.compile(r'(?:<|(?<![|｜]))' + _DSML_PREFIX, re.IGNORECASE | re.ASCII)
+_DSML_PARTIAL = re.compile(r'<?[|｜]+\s*(?:D(?:S(?:M(?:L\s*)?)?)?)?\Z', re.IGNORECASE | re.ASCII)
+_PREFIX_CANDIDATES = re.compile(r'<|(?<![|｜])[|｜]')
 # Consume CDATA as one token, so markup inside commands stays literal.
 _CONTENTS = r'((?:<!\[CDATA\[.*?\]\]>|(?!<!\[CDATA\[).)*?)'
 _TAG_TOKENS = re.compile(
-    r'<!\[CDATA\[.*?(?:\]\]>|$)|<(/?)(?:[|｜]\s*DSML\s*[|｜]\s*)?'
+    r'<!\[CDATA\[.*?(?:\]\]>|$)|<(/?)(?:' + _DSML_PREFIX + r'\s*)?'
     r'(tool_calls|tool_call|calls|invoke)\b[^>]*>', re.DOTALL | re.IGNORECASE)
+
+
+def find_dsml_start(text: str) -> int:
+    """Find a complete DSML marker using the same separators as block closure."""
+    match = _DSML_START.search(text)
+    return match.start() if match else -1
+
+
+def dsml_prefix_tail(text: str) -> int | None:
+    """Original offset of an incomplete marker that a later chunk can finish."""
+    for candidate in _PREFIX_CANDIDATES.finditer(text):
+        if _DSML_PARTIAL.fullmatch(text, candidate.start()):
+            return candidate.start()
+    return None
 
 
 def tool_block_end(text: str) -> int | None:

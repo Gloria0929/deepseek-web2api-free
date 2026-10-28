@@ -13,7 +13,7 @@ v2.2.0 fixes:
 import os
 from dataclasses import dataclass
 from typing import Any, Callable
-from tool_dsml import tool_block_end
+from tool_dsml import tool_block_end, find_dsml_start, dsml_prefix_tail
 
 
 def _env_int(name: str, default: int) -> int:
@@ -40,22 +40,16 @@ class StreamSieve:
     """实时筛分 SSE 流中的 DSML 工具调用。"""
 
     _TOOL_STARTS = [
-        "<|DSML|tool_calls>",
-        "|DSML|tool_calls>",
         "<tool_calls>",
         "<tool_call>",
         "<invoke ",
-        "<|DSML|invoke ",
-        "|DSML|invoke ",
-        "<|DSML|calls>",
-        "<|DSML|tool_call>",
         "<calls>",
     ]
 
     # Plain prefixes that *could* grow into a tool call tag. Used to decide
     # how much of the tail to hold while we wait for more characters.
     _TOOL_PREFIXES = (
-        "<|DSML|", "|DSML|", "<tool_calls", "<tool_call", "<calls", "<invoke",
+        "<tool_calls", "<tool_call", "<calls", "<invoke",
     )
 
     def __init__(self, parse_fn: Callable | None = None,
@@ -196,8 +190,9 @@ class StreamSieve:
         return events
 
     def _find_tool_start(self, text: str) -> int:
+        marker = find_dsml_start(text)
         text = text.translate(_TAG_SCAN_TRANSLATION)
-        positions = []
+        positions = [marker] if marker >= 0 else []
         for tag in self._TOOL_STARTS:
             pos = text.find(tag.lower())
             if pos >= 0:
@@ -223,10 +218,14 @@ class StreamSieve:
         # before every streamed tool call, plus a leaked closing tag.
         cands = tuple(c.lower() for c in (*self._TOOL_STARTS, *self._TOOL_PREFIXES))
         folded = text.translate(_TAG_SCAN_TRANSLATION)
+        hold_at = dsml_prefix_tail(text)
         for i in range(max(0, len(text) - max(map(len, cands))), len(text)):
             if folded[i] in "<|" and any(c.startswith(folded[i:]) for c in cands):
-                return text[:i], text[i:]
-        return text, ""
+                hold_at = min(i,hold_at) if hold_at is not None else i
+                break
+        if hold_at is None or len(text)-hold_at > self._max_capture_buffer:
+            return text, ""
+        return text[:hold_at], text[hold_at:]
 
     def _try_finish_capture(self):
         if not self._capture_buf or not self.parse_fn:

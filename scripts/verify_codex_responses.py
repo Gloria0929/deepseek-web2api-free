@@ -51,7 +51,7 @@ def run_case(cli, http, tool, *, variant=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--cli', default=shutil.which('codex'), help='Installed Codex executable')
-    parser.add_argument('--dsml-variant', action='store_true', help='Use fullwidth DSML calls/string attributes, streamed character by character')
+    parser.add_argument('--dsml-variant', action='store_true', help='Use repeated fullwidth DSML separators, calls/string attributes, streamed character by character')
     args = parser.parse_args()
     if not args.cli: parser.error('Codex CLI is required; provide --cli')
     with running_server() as http:
