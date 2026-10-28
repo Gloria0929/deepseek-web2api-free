@@ -13,6 +13,7 @@ v2.2.0 fixes:
 import os
 from dataclasses import dataclass
 from typing import Any, Callable
+from tool_dsml import tool_block_end
 
 
 def _env_int(name: str, default: int) -> int:
@@ -26,6 +27,7 @@ def _env_int(name: str, default: int) -> int:
 
 
 MAX_CAPTURE_BUFFER = _env_int("DSML_MAX_BUFFER_BYTES", 1024 * 1024)  # 1 MiB
+_TAG_SCAN_TRANSLATION = str.maketrans('ABCDEFGHIJKLMNOPQRSTUVWXYZ｜', 'abcdefghijklmnopqrstuvwxyz|')
 
 
 @dataclass
@@ -45,12 +47,15 @@ class StreamSieve:
         "<invoke ",
         "<|DSML|invoke ",
         "|DSML|invoke ",
+        "<|DSML|calls>",
+        "<|DSML|tool_call>",
+        "<calls>",
     ]
 
     # Plain prefixes that *could* grow into a tool call tag. Used to decide
     # how much of the tail to hold while we wait for more characters.
     _TOOL_PREFIXES = (
-        "<|DSML|", "|DSML|", "<tool_calls", "<tool_call", "<invoke",
+        "<|DSML|", "|DSML|", "<tool_calls", "<tool_call", "<calls", "<invoke",
     )
 
     def __init__(self, parse_fn: Callable | None = None,
@@ -191,15 +196,17 @@ class StreamSieve:
         return events
 
     def _find_tool_start(self, text: str) -> int:
+        text = text.translate(_TAG_SCAN_TRANSLATION)
+        positions = []
         for tag in self._TOOL_STARTS:
-            pos = text.find(tag)
+            pos = text.find(tag.lower())
             if pos >= 0:
-                return pos
+                positions.append(pos)
         for prefix in self._TOOL_PREFIXES:
-            pos = text.find(prefix)
+            pos = text.find(prefix.lower())
             if pos >= 0:
-                return pos
-        return -1
+                positions.append(pos)
+        return min(positions, default=-1)
 
     def _split_safe(self, text: str) -> tuple[str, str]:
         """Return ``(safe, hold)`` such that ``safe + hold == text`` and
@@ -214,26 +221,21 @@ class StreamSieve:
         # the last special char is '|', so the '<' was emitted as text and the
         # capture started at "|DSML|...". The client then saw a stray "<"
         # before every streamed tool call, plus a leaked closing tag.
-        cands = (*self._TOOL_STARTS, *self._TOOL_PREFIXES)
+        cands = tuple(c.lower() for c in (*self._TOOL_STARTS, *self._TOOL_PREFIXES))
+        folded = text.translate(_TAG_SCAN_TRANSLATION)
         for i in range(max(0, len(text) - max(map(len, cands))), len(text)):
-            if text[i] in "<|" and any(c.startswith(text[i:]) for c in cands):
+            if folded[i] in "<|" and any(c.startswith(folded[i:]) for c in cands):
                 return text[:i], text[i:]
         return text, ""
 
     def _try_finish_capture(self):
         if not self._capture_buf or not self.parse_fn:
             return None
-        if not self._is_capture_complete():
+        end = tool_block_end(self._capture_buf)
+        if end is None:
             return None
-        tool_calls, cleaned = self.parse_fn(self._capture_buf)
+        captured, suffix = self._capture_buf[:end], self._capture_buf[end:]
+        tool_calls, cleaned = self.parse_fn(captured)
         if tool_calls:
-            return ("", tool_calls, "")
-        return (self._capture_buf, None, "")
-
-    def _is_capture_complete(self) -> bool:
-        buf = self._capture_buf
-        if "<|DSML|tool_calls>" in buf or "<tool_calls>" in buf:
-            return "</|DSML|tool_calls>" in buf or "</tool_calls>" in buf
-        if "<invoke " in buf or "<|DSML|invoke " in buf:
-            return "</invoke>" in buf or "</|DSML|invoke>" in buf
-        return False
+            return ("", tool_calls, suffix)
+        return (captured, None, suffix)

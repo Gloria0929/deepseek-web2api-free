@@ -51,7 +51,10 @@ class ScriptedAdapter:
                 if 'Tool result (call_id=' in prompt:
                     text = 'CODEX-PROBE' if 'CODEX-PROBE' in prompt.split('Tool result (call_id=')[-1] else 'missing probe'
                 else:
-                    text = '<tool_calls><invoke name="shell_command"><parameter name="command">cat probe.txt</parameter></invoke></tool_calls>'
+                    if 'case:codex_tool_variant' in prompt:
+                        text = '<｜DSML｜calls><｜DSML｜invoke name="shell_command"><｜DSML｜parameter name="command" string="true">cat probe.txt</｜DSML｜parameter></｜DSML｜invoke></｜DSML｜calls>'
+                    else:
+                        text = '<tool_calls><invoke name="shell_command"><parameter name="command">cat probe.txt</parameter></invoke></tool_calls>'
             elif 'case:batch' in last or 'case:slow_tool' in last:
                 second = '123' if 'invalid' in last else 'London'
                 text = (Path(__file__).parent/'fixtures/two-calls.txt').read_text(encoding='utf-8').strip().replace('London',second)
@@ -71,8 +74,11 @@ class ScriptedAdapter:
             else: text = 'answer'
             yield {'__type':'thinking','content':'synthetic reasoning'}
             # Split DSML across chunks; parser/sieve must preserve complete batches.
-            midpoint = max(1,len(text)//2)
-            yield text[:midpoint]; yield text[midpoint:]
+            if 'case:codex_tool_variant' in prompt:
+                yield from text  # Stress every tag/attribute boundary.
+            else:
+                midpoint = max(1,len(text)//2)
+                yield text[:midpoint]; yield text[midpoint:]
             if 'case:slow_tool' in last: time.sleep(.8)
             if 'case:midstream_fail' in last: raise RuntimeError('Synthetic private midstream detail')
             options.get('ready_out',{}).update(response_message_id=2,session_id=session)

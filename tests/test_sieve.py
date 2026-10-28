@@ -2,6 +2,7 @@
 
 Run with:  python -m pytest tests/test_sieve.py -v
 """
+import json
 import pytest
 
 from tool_sieve import StreamSieve, SieveEvent
@@ -124,6 +125,7 @@ def test_tokenized_dsml_tool_call_leaks_no_text():
     text, calls = _collect(s, chunks)
     assert text == ""
     assert len(calls) == 1
+    assert json.loads(calls[0]['function']['arguments']) == {'city': 'Berlin'}
 
 
 def test_lone_lt_and_pipe_in_plain_text_pass_through():

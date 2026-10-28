@@ -15,6 +15,28 @@ from typing import Any
 
 _CDATA_OPEN = "<![CDATA["
 _CDATA_CLOSE = "]]>"
+_WRAPPERS = {'tool_calls', 'tool_call', 'calls'}
+# Consume CDATA as one token, so markup inside commands stays literal.
+_CONTENTS = r'((?:<!\[CDATA\[.*?\]\]>|(?!<!\[CDATA\[).)*?)'
+_TAG_TOKENS = re.compile(
+    r'<!\[CDATA\[.*?(?:\]\]>|$)|<(/?)(?:[|｜]\s*DSML\s*[|｜]\s*)?'
+    r'(tool_calls|tool_call|calls|invoke)\b[^>]*>', re.DOTALL | re.IGNORECASE)
+
+
+def tool_block_end(text: str) -> int | None:
+    """Original-text end offset of the first closed wrapper/bare invoke."""
+    outer = None
+    for match in _TAG_TOKENS.finditer(text):
+        closing, name = match.groups()
+        if name is None: continue  # CDATA
+        name = name.lower()
+        name = 'tool_calls' if name in _WRAPPERS else name
+        if outer is None:
+            if closing: return None
+            outer = name
+        elif closing and name == outer:
+            return match.end()
+    return None
 
 
 def strip_dsml_markup(text: str) -> str:
@@ -25,7 +47,7 @@ def strip_dsml_markup(text: str) -> str:
     i, n = 0, len(text)
     while i < n:
         c = text[i]
-        if text[i:].startswith(_CDATA_OPEN):
+        if text.startswith(_CDATA_OPEN, i):
             close = text.find(_CDATA_CLOSE, i + len(_CDATA_OPEN))
             if close == -1:
                 parts.append(text[i:])
@@ -48,23 +70,24 @@ def strip_dsml_markup(text: str) -> str:
         dsml = False
         while j < len(rest):
             ch = rest[j]
-            if ch in ('|', ' ', '\t', '\r', '\n'):
+            if ch in ('|', '｜', ' ', '\t', '\r', '\n'):
                 j += 1
-                if ch == '|':
+                if ch in ('|', '｜'):
                     dsml = True
             elif rest[j:j+4].lower() == 'dsml':
                 j += 4
                 dsml = True
             else:
                 break
-        if dsml:
+        if dsml or rest.lower() in _WRAPPERS:
             name_end = j
             while name_end < len(rest) and (rest[name_end].isalnum() or rest[name_end] == '_'):
                 name_end += 1
             tag_name = rest[j:name_end].lower()
-            if tag_name in ("tool_calls", "invoke", "parameter"):
+            if tag_name in _WRAPPERS or tag_name in ("invoke", "parameter"):
                 prefix = '</' if inner.startswith('/') else '<'
-                parts.append(prefix + rest[j:] + '>')
+                canonical = 'tool_calls' if tag_name in _WRAPPERS else tag_name
+                parts.append(prefix + canonical + rest[name_end:] + '>')
                 i = end + 1
                 continue
         parts.append(text[i:end + 1])
@@ -88,16 +111,14 @@ def parse_dsml_tool_calls(text: str, tool_names: list[str] | None = None) -> tup
     normalized = strip_dsml_markup(text)
     tool_calls = []
 
-    # <tool_calls>...</tool_calls> 或 <tool_call>...</tool_call>
-    for pattern in (r"<tool_calls>(.*?)</tool_calls>", r"<tool_call>(.*?)</tool_call>"):
-        blocks = re.findall(pattern, normalized, re.DOTALL | re.IGNORECASE)
-        if blocks:
-            break
+    # Wrapper aliases have already been normalized to tool_calls.
+    blocks = re.findall(r"<tool_calls>" + _CONTENTS + r"</tool_calls>",
+                        normalized, re.DOTALL | re.IGNORECASE)
 
     if not blocks:
         # 裸 <invoke> 无外层 wrapper
         invoke_bare = re.findall(
-            r"<invoke\s+name=[\"']([^\"']+)[\"']>(.*?)</invoke>",
+            r"<invoke\s+name=[\"']([^\"']+)[\"']>" + _CONTENTS + r"</invoke>",
             normalized, re.DOTALL | re.IGNORECASE
         )
         for name, inner in invoke_bare:
@@ -107,7 +128,7 @@ def parse_dsml_tool_calls(text: str, tool_names: list[str] | None = None) -> tup
 
     for block_text in blocks:
         for name, inner in re.findall(
-            r"<invoke\s+name=[\"']([^\"']+)[\"']>(.*?)</invoke>",
+            r"<invoke\s+name=[\"']([^\"']+)[\"']>" + _CONTENTS + r"</invoke>",
             block_text, re.DOTALL | re.IGNORECASE
         ):
             tc = _format_tool_call(name.strip(), _parse_parameters(inner))
@@ -121,12 +142,19 @@ def parse_dsml_tool_calls(text: str, tool_names: list[str] | None = None) -> tup
 def _parse_parameters(inner_text: str) -> dict:
     args = {}
     for m in re.finditer(
-        r"<parameter\s+name=[\"']([^\"']+)[\"']>(.*?)</parameter>",
+        r"<parameter\b([^>]*)>" + _CONTENTS + r"</parameter>",
         inner_text, re.DOTALL | re.IGNORECASE
     ):
-        key = m.group(1).strip()
-        val_raw = m.group(2).strip()
-        val_raw = extract_cdata(val_raw)
+        attributes = {name.lower(): value for name, value in
+            re.findall(r'''([\w]+)\s*=\s*["']([^"']*)["']''', m.group(1))}
+        key = attributes.get('name', '').strip()
+        if not key: continue
+        raw = m.group(2)
+        if attributes.get('string', '').lower() == 'true':
+            trimmed = raw.strip()
+            args[key] = extract_cdata(trimmed) if trimmed.startswith(_CDATA_OPEN) and trimmed.endswith(_CDATA_CLOSE) else raw
+            continue
+        val_raw = extract_cdata(raw.strip())
         try:
             val = json.loads(val_raw)
         except (json.JSONDecodeError, ValueError):
@@ -157,9 +185,9 @@ def _format_tool_call(name: str, args: dict) -> dict | None:
 
 
 def _clean_dsml_text(text: str) -> str:
-    text = re.sub(r"<tool_calls?>.*?</tool_calls?>", "", text, flags=re.DOTALL | re.IGNORECASE)
-    text = re.sub(r"<invoke[^>]*>.*?</invoke>", "", text, flags=re.DOTALL | re.IGNORECASE)
-    text = re.sub(r"<parameter[^>]*>.*?</parameter>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<tool_calls>" + _CONTENTS + r"</tool_calls>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<invoke[^>]*>" + _CONTENTS + r"</invoke>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<parameter[^>]*>" + _CONTENTS + r"</parameter>", "", text, flags=re.DOTALL | re.IGNORECASE)
     text = re.sub(r"<!\[CDATA\[.*?\]\]>", "", text, flags=re.DOTALL)
     text = re.sub(r"\[citation:\d+\]", "", text)
     text = re.sub(r"\n{3,}", "\n\n", text)

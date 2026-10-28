@@ -105,6 +105,7 @@ def test_tool_call_path_is_unaffected(monkeypatch):
     assert choice["finish_reason"] == "tool_calls"
     assert choice["message"]["content"] is None
     assert choice["message"]["tool_calls"][0]["function"]["name"] == "get_weather"
+    assert json.loads(choice['message']['tool_calls'][0]['function']['arguments']) == {'city': 'Beijing'}
     assert "reasoning_content" not in choice["message"]
 
 

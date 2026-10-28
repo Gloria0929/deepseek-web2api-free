@@ -144,6 +144,8 @@ python scripts/run_responses_compat.py --require-all
 
 另有 `python scripts/verify_codex_responses.py --cli <Codex可执行文件>`，要求本机安装 Codex CLI。它在独立临时目录和只读 sandbox 下运行真实 CLI，验证首轮 SSE、读取合成文件的函数调用与结果重放，以及 `store=false` 和资源释放；只替换上游，不使用 HAR。此可选验收不纳入普通 pytest，也不表示真实上游的工具遵从性已验证。
 
+加上 `--dsml-variant` 可复现模型使用全角竖线、`calls` 包装标签和 `string="true"` 参数属性的情况。测试上游逐字符发送该格式，验证其被转换为 `function_call`，且 CLI 实际完成文件读取和结果回传。
+
 已准备 HAR 时可运行 `python scripts/verify_responses_live.py --har <HAR路径> --report <报告路径>`，默认验证 Python 与 JS，或用 `--client python` / `--client javascript` 单独选择。凭证仅进入临时账号库；报告只记录检查结果、异常类型/HTTP状态和匿名传输计数。验收脚本和 SDK 不额外重试；代理适配器仍按 `DEEPSEEK_RATE_LIMIT_RETRY_DELAYS` 对上游限流退避，并对空响应按现有策略重试。最终的凭证、上游或模型遵从性失败会在报告中体现。此命令会向真实上游发送测试请求，不放入 CI。
 
 诊断使用现有 `LOG_LEVEL` / JSON logger，事件名 `responses_execution`。记录 history_replay、account_wait、session_create、image_upload、image_processing、generation、storage 耗时，以及流式 first_upstream_event/first_output_text；非流式不伪造首 token 时间。字段仅含内部请求/响应 ID、固定阶段/状态、耗时、计数和安全错误码，不含正文、图片 URL/base64、文件 ID、工具参数/结果或凭证。
