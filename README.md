@@ -1,6 +1,6 @@
 # DeepSeek Chat API Proxy
 
-当前版本：**v4.1.3** — [中文发布说明](docs/release-notes/v4.1.3.md)：修复 Codex CLI 工具调用的 DSML 变体解析和参数丢失。
+当前版本：**v4.1.4** — [中文发布说明](docs/release-notes/v4.1.4.md)：修复 Anthropic 非流式工具响应回填原始标签，补齐三个端点的路由回归。
 
 > 将 DeepSeek Chat (chat.deepseek.com) 的私有 API 转换为 OpenAI / Anthropic 兼容格式。
 

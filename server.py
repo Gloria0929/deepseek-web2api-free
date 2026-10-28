@@ -214,7 +214,7 @@ def _check_rate_limit(request: Request) -> dict:
     return headers
 
 
-app = FastAPI(title="DeepSeek Chat API", version="4.1.3")
+app = FastAPI(title="DeepSeek Chat API", version="4.1.4")
 app.add_middleware(ImageBodyLimit)
 
 
@@ -917,7 +917,9 @@ def _anthropic_nonstream(msg_id: str, prompt: str, tool_names: list[str],
     tool_calls, cleaned = parse_dsml_tool_calls(content, tool_names)
     return build_nonstream_response(
         msg_id, MODEL_NAME,
-        content_text=cleaned or content,
+        # Empty cleaned text is valid for a pure tool response. Falling back
+        # on truthiness would expose the original DSML alongside tool_use.
+        content_text=cleaned if tool_calls else content,
         tool_calls=tool_calls,
         thinking_text=thinking,
     )
