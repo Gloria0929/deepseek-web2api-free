@@ -905,15 +905,15 @@ def _anthropic_nonstream(msg_id: str, prompt: str, tool_names: list[str],
             acq.record_message_id(ready_out["response_message_id"],
                                   ready_out.get("session_id"),
                                   full_prompt=prompt)
-        get_stats().record(MODEL_NAME, (time.time() - t0) * 1000)
+        get_stats().record(MODEL_NAME, (time.time() - t0) * 1000, account_id=acq.acct.id)
     except ImageError:
-        get_stats().record(MODEL_NAME, 0, success=False)
+        get_stats().record(MODEL_NAME, 0, success=False, account_id=acq.acct.id)
         raise
     except RateLimitError as e:
         # Match the OpenAI endpoint: upstream throttling is a client-visible
         # 429, not an opaque Anthropic 500. This includes account mute errors
         # because UserMutedError derives from RateLimitError.
-        get_stats().record(MODEL_NAME, 0, success=False)
+        get_stats().record(MODEL_NAME, 0, success=False, account_id=acq.acct.id)
         if cache_key:
             SESSION_CACHE.invalidate(cache_key)
         raise HTTPException(
@@ -921,18 +921,18 @@ def _anthropic_nonstream(msg_id: str, prompt: str, tool_names: list[str],
             detail=f"上游限流：{e.args[0] if e.args else '请求过于频繁'}，请稍后重试",
         )
     except UpstreamHintError as e:
-        get_stats().record(MODEL_NAME, 0, success=False)
+        get_stats().record(MODEL_NAME, 0, success=False, account_id=acq.acct.id)
         pool.mark_error(acq.acct, str(e))
         raise HTTPException(status_code=502, detail=str(e))
     except UpstreamEmptyError:
         # Empty upstream bodies are transient and should not poison the
         # account pool, but the client still needs a meaningful 502.
-        get_stats().record(MODEL_NAME, 0, success=False)
+        get_stats().record(MODEL_NAME, 0, success=False, account_id=acq.acct.id)
         if cache_key:
             SESSION_CACHE.invalidate(cache_key)
         raise HTTPException(status_code=502, detail="上游返回空响应（可能触发限流），请稍后重试")
     except Exception as e:
-        get_stats().record(MODEL_NAME, 0, success=False)
+        get_stats().record(MODEL_NAME, 0, success=False, account_id=acq.acct.id)
         pool.mark_error(acq.acct, str(e))
         raise
     finally:
@@ -975,9 +975,9 @@ async def _anthropic_stream(msg_id: str, prompt: str, tool_names: list[str],
                 acq.record_message_id(ready_out["response_message_id"],
                                       ready_out.get("session_id"),
                                       full_prompt=prompt)
-            get_stats().record(MODEL_NAME, (time.time() - t0) * 1000)
+            get_stats().record(MODEL_NAME, (time.time() - t0) * 1000, account_id=acq.acct.id)
         except Exception as e:
-            get_stats().record(MODEL_NAME, (time.time() - t0) * 1000, success=False)
+            get_stats().record(MODEL_NAME, (time.time() - t0) * 1000, success=False, account_id=acq.acct.id)
             if isinstance(e, (RateLimitError, UpstreamEmptyError)):
                 if cache_key:
                     SESSION_CACHE.invalidate(cache_key)
@@ -1023,32 +1023,33 @@ def _handle_nonstream(proxy_id: str, prompt: str, tools: list[ToolDef] | None = 
                                   full_prompt=prompt)
         completion_tokens = count_text(content) + count_text(thinking)
         get_stats().record(MODEL_NAME, (time.time() - t0) * 1000,
-                           prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
+                           prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+                           account_id=acq.acct.id)
     except ImageError:
-        get_stats().record(MODEL_NAME, 0, success=False)
+        get_stats().record(MODEL_NAME, 0, success=False, account_id=acq.acct.id)
         raise
     except RateLimitError as e:
         # Rate limiting is a transient upstream state, not a credential
         # problem — do NOT mark the account as errored, or the pool would
         # drain to 503 once the limiter cools down. Invalidate the cached
         # session so the next call starts fresh.
-        get_stats().record(MODEL_NAME, 0, success=False)
+        get_stats().record(MODEL_NAME, 0, success=False, account_id=acq.acct.id)
         if cache_key:
             SESSION_CACHE.invalidate(cache_key)
         raise HTTPException(status_code=429, detail=f"上游限流：{e.args[0] if e.args else '请求过于频繁'}，请稍后重试")
     except UpstreamHintError as e:
-        get_stats().record(MODEL_NAME, 0, success=False)
+        get_stats().record(MODEL_NAME, 0, success=False, account_id=acq.acct.id)
         pool.mark_error(acq.acct, str(e))
         raise HTTPException(status_code=502, detail=str(e))
     except UpstreamEmptyError as e:
         # Transient empty responses (stale pooled connection / upstream
         # hiccup) — retried in the adapter already; do not poison the pool.
-        get_stats().record(MODEL_NAME, 0, success=False)
+        get_stats().record(MODEL_NAME, 0, success=False, account_id=acq.acct.id)
         if cache_key:
             SESSION_CACHE.invalidate(cache_key)
         raise HTTPException(status_code=502, detail="上游返回空响应（可能触发限流），请稍后重试")
     except Exception as e:
-        get_stats().record(MODEL_NAME, 0, success=False)
+        get_stats().record(MODEL_NAME, 0, success=False, account_id=acq.acct.id)
         pool.mark_error(acq.acct, str(e))
         raise
     finally:
@@ -1229,10 +1230,11 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
             completion_tokens = count_text("".join(completion_parts))
             get_stats().record(MODEL_NAME, (time.time() - t0) * 1000,
                                prompt_tokens=prompt_tokens,
-                               completion_tokens=completion_tokens)
+                               completion_tokens=completion_tokens,
+                               account_id=acq.acct.id)
         except Exception as e:
             get_stats().record(MODEL_NAME, (time.time() - t0) * 1000, success=False,
-                               prompt_tokens=prompt_tokens)
+                               prompt_tokens=prompt_tokens, account_id=acq.acct.id)
             # Rate limit / transient empty responses are not credential
             # failures — keep the account usable instead of draining the pool.
             if isinstance(e, (RateLimitError, UpstreamEmptyError)):
@@ -1340,7 +1342,7 @@ app.include_router(create_responses_router(
     store=lambda: RESPONSE_STORE, acquire=lambda parent: _acquire_response(parent),
     authenticate=_responses_auth, scope=_cache_scope, controls=_responses_controls, model=lambda: MODEL_NAME,
     mark_error=lambda acquired, error: pool.mark_error(acquired.acct, str(error)),
-    record=lambda elapsed, success: get_stats().record(MODEL_NAME, elapsed, success=success)))
+    record=lambda elapsed, success, account_id=None: get_stats().record(MODEL_NAME, elapsed, success=success, account_id=account_id)))
 
 
 def _safe_webui_path(rest_of_path: str) -> str | None:

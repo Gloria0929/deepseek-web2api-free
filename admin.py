@@ -135,6 +135,7 @@ class StatsSnapshot:
         self.total_completion_tokens = 0
         self.start_time = time.time()
         self.models: dict[str, dict] = {}
+        self.accounts: dict[str, dict] = {}
         # Bounded ring buffer of recent latencies (ms) for percentile
         # computation. ``deque(maxlen=N)`` is O(1) on push and silently
         # drops the oldest entry when full.
@@ -142,7 +143,7 @@ class StatsSnapshot:
 
     def record(self, model: str, latency_ms: float,
                prompt_tokens: int = 0, completion_tokens: int = 0,
-               success: bool = True):
+               success: bool = True, account_id: str | None = None):
         self.total_requests += 1
         if success:
             self.success_requests += 1
@@ -161,6 +162,37 @@ class StatsSnapshot:
         self.models[model]["completion_tokens"] += completion_tokens
         if not success:
             self.models[model]["errors"] += 1
+        if account_id:
+            entry = self.accounts.setdefault(
+                account_id,
+                {"requests": 0, "success_requests": 0, "failed_requests": 0,
+                 "total_latency_ms": 0.0, "prompt_tokens": 0,
+                 "completion_tokens": 0, "last_used": 0.0})
+            entry["requests"] += 1
+            if success:
+                entry["success_requests"] += 1
+            else:
+                entry["failed_requests"] += 1
+            entry["total_latency_ms"] += latency_ms
+            entry["prompt_tokens"] += prompt_tokens
+            entry["completion_tokens"] += completion_tokens
+            entry["last_used"] = time.time()
+
+    def account_stats(self) -> dict:
+        out = {}
+        for aid, entry in self.accounts.items():
+            requests = entry["requests"]
+            out[aid] = {
+                "requests": requests,
+                "success_requests": entry["success_requests"],
+                "failed_requests": entry["failed_requests"],
+                "success_rate": round(entry["success_requests"] / requests, 4) if requests else 0.0,
+                "avg_latency_ms": int(entry["total_latency_ms"] / requests) if requests else 0,
+                "prompt_tokens": entry["prompt_tokens"],
+                "completion_tokens": entry["completion_tokens"],
+                "last_used": entry["last_used"],
+            }
+        return out
 
     def percentile(self, pct: float) -> int:
         return _percentile(list(self._recent_latencies), pct)
@@ -327,6 +359,7 @@ async def stats(request: Request):
         "total_completion_tokens": s.total_completion_tokens,
         "uptime_secs": uptime,
         "models": s.models,
+        "accounts": s.account_stats(),
     }
 
 

@@ -10,6 +10,7 @@ import {
   Coins,
   BarChart3,
 } from 'lucide-react'
+import { useState } from 'react'
 import { useApi } from '@/hooks/useApi'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { StatCard } from '@/components/stats/StatCard'
@@ -26,6 +27,25 @@ export default function DashboardPage() {
   const stats = useApi<StatsResponse>('/admin/api/stats', { pollMs: 5000 })
   const accts = useApi<AccountsResponse>('/admin/api/accounts', { pollMs: 10000 })
   const history = useApi<HistoryResponse>('/admin/api/history', { pollMs: 30000 })
+  const [selectedAccount, setSelectedAccount] = useState('')
+  const accountEntry = selectedAccount ? stats.data?.accounts?.[selectedAccount] : undefined
+  const accountIds = Array.from(
+    new Set([...(accts.data?.accounts ?? []).map((a) => a.id), ...Object.keys(stats.data?.accounts ?? {})]),
+  )
+  const accountLabel = (id: string) => {
+    const found = (accts.data?.accounts ?? []).find((a) => a.id === id)
+    return found ? found.email || found.id : id
+  }
+  const hasAccountData = selectedAccount !== '' && !!stats.data
+  const shown = {
+    requests: hasAccountData ? (accountEntry?.requests ?? 0) : stats.data?.total_requests,
+    success: hasAccountData ? (accountEntry?.success_requests ?? 0) : stats.data?.success_requests,
+    failed: hasAccountData ? (accountEntry?.failed_requests ?? 0) : stats.data?.failed_requests,
+    rate: hasAccountData ? (accountEntry?.success_rate ?? 0) : stats.data?.success_rate,
+    latency: hasAccountData ? (accountEntry?.avg_latency_ms ?? 0) : stats.data?.avg_latency_ms,
+    prompt: hasAccountData ? (accountEntry?.prompt_tokens ?? 0) : stats.data?.total_prompt_tokens,
+    completion: hasAccountData ? (accountEntry?.completion_tokens ?? 0) : stats.data?.total_completion_tokens,
+  }
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -34,38 +54,61 @@ export default function DashboardPage() {
         description="实时统计 · 趋势图 · 账号池状态"
       />
 
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm text-muted-foreground">统计范围：</span>
+        <select
+          value={selectedAccount}
+          onChange={(event) => setSelectedAccount(event.target.value)}
+          className="flex h-9 rounded-md border border-input bg-background px-3 py-1 text-sm"
+          aria-label="选择统计账号"
+        >
+          <option value="">全部账号</option>
+          {accountIds.map((id) => (
+            <option key={id} value={id}>
+              {accountLabel(id)}
+            </option>
+          ))}
+        </select>
+        {selectedAccount !== '' && accountEntry && (
+          <span className="text-xs text-muted-foreground">
+            最后使用：{new Date(accountEntry.last_used * 1000).toLocaleString()}
+          </span>
+        )}
+        <span className="text-xs text-muted-foreground">运行时间与图表为全局数据，不随账号切换。</span>
+      </div>
+
       {/* 6 stat cards */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <StatCard
           label="总请求"
-          value={formatNumber(stats.data?.total_requests)}
+          value={formatNumber(shown.requests)}
           icon={Activity}
           loading={stats.loading && !stats.data}
         />
         <StatCard
           label="成功"
-          value={formatNumber(stats.data?.success_requests)}
+          value={formatNumber(shown.success)}
           tone="success"
           icon={CheckCircle2}
           loading={stats.loading && !stats.data}
         />
         <StatCard
           label="失败"
-          value={formatNumber(stats.data?.failed_requests)}
+          value={formatNumber(shown.failed)}
           tone="destructive"
           icon={XCircle}
           loading={stats.loading && !stats.data}
         />
         <StatCard
           label="成功率"
-          value={formatPercent(stats.data?.success_rate)}
+          value={formatPercent(shown.rate)}
           tone="primary"
           icon={Percent}
           loading={stats.loading && !stats.data}
         />
         <StatCard
           label="平均延迟"
-          value={formatLatency(stats.data?.avg_latency_ms)}
+          value={formatLatency(shown.latency)}
           icon={Clock}
           loading={stats.loading && !stats.data}
         />
@@ -149,8 +192,8 @@ export default function DashboardPage() {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
-            <TokenRow icon={KeyRound} label="Prompt" value={stats.data?.total_prompt_tokens} />
-            <TokenRow icon={Coins} label="Completion" value={stats.data?.total_completion_tokens} />
+            <TokenRow icon={KeyRound} label="Prompt" value={shown.prompt} />
+            <TokenRow icon={Coins} label="Completion" value={shown.completion} />
             <div className="pt-1 text-[11px] text-muted-foreground">本地 tiktoken 估算</div>
           </CardContent>
         </Card>

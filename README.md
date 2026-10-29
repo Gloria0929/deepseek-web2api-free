@@ -204,6 +204,12 @@ docker compose up -d --build
 - 不走 compose 也行：`docker build -t deepseek-web2api-free . && docker run -d -p 18080:18080 -v ./data:/app/data --env-file .env deepseek-web2api-free`。
 - 国内网络构建慢时，build 可传 `--build-arg NPM_REGISTRY=https://registry.npmmirror.com --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple`。
 
+## 按账号统计（本 fork 新增）
+
+统计接口（`GET /admin/api/stats`）在原有总量的基础上，增加了按账号分的 `accounts` 一项：每个账号的请求数、成功/失败数、成功率、平均延迟、Token 数与最后使用时间。仪表盘顶部有“统计范围”下拉框，选哪个账号就看哪个账号的数据；选“全部账号”看总量。运行时间与图表仍为全局数据。
+
+注意：统计为内存数据，重启后清零，与原有全局统计一致；下拉框里列出池内全部账号，没跑过请求的账号数据为 0。
+
 ## 非交互式账号池配置（代理 / 自动化工具）
 
 > **给 SDK、脚本、curl、CI、代理用**，不经过 WebUI 面板。账号凭证统一存储在 `data/accounts.json`；`.env` 不读取账号凭证。非交互场景直接维护该文件即可。

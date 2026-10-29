@@ -97,11 +97,11 @@ def create_responses_router(*, store, acquire, authenticate, scope, controls, mo
                     validate_calls(req, result.calls)
                     response = response_object(req, response_id, model(), output_items(result), prompt, created_at=created)
                     save(response)
-                    record((time.monotonic() - started) * 1000, True)
+                    record((time.monotonic() - started) * 1000, True, acquired.acct.id)
                     trace.finish('completed')
                     return JSONResponse(response, headers=headers)
                 except Exception as error:
-                    record((time.monotonic() - started) * 1000, False)
+                    record((time.monotonic() - started) * 1000, False, acquired.acct.id)
                     trace.finish('failed', classify_error(error).code)
                     raise
                 finally:
@@ -127,11 +127,11 @@ def create_responses_router(*, store, acquire, authenticate, scope, controls, mo
                     for frame in wire.close_active(): yield frame
                     response = wire.response()
                     save(response)
-                    record((time.monotonic() - started) * 1000, True)
+                    record((time.monotonic() - started) * 1000, True, acquired.acct.id)
                     trace.finish('completed')
                     yield wire.emit('response.completed', response=response)
                 except Exception as error:
-                    record((time.monotonic() - started) * 1000, False)
+                    record((time.monotonic() - started) * 1000, False, acquired.acct.id)
                     trace.finish('failed', classify_error(error).code)
                     yield wire.fail(public_error(error))
                 finally:

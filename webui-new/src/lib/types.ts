@@ -25,6 +25,19 @@ export interface StatsResponse {
       errors: number
     }
   >
+  accounts: Record<
+    string,
+    {
+      requests: number
+      success_requests: number
+      failed_requests: number
+      success_rate: number
+      avg_latency_ms: number
+      prompt_tokens: number
+      completion_tokens: number
+      last_used: number
+    }
+  >
 }
 
 export interface Account {
