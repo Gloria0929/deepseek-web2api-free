@@ -5,13 +5,15 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { useToast } from '@/hooks/use-toast'
-import { del, get, post } from '@/lib/api'
+import { del, get, post, put } from '@/lib/api'
+import type { Account, AccountsResponse } from '@/lib/types'
 
 interface ApiKeyRecord {
   id: string
   name: string
   prefix: string
   created_at: number
+  account_id: string | null
 }
 
 interface ApiKeyListResponse {
@@ -26,6 +28,11 @@ interface ApiKeyCreateResponse {
 export function ApiKeyManager() {
   const [keys, setKeys] = useState<ApiKeyRecord[]>([])
   const [name, setName] = useState('')
+  const [accounts, setAccounts] = useState<Account[]>([])
+  const [accountsLoaded, setAccountsLoaded] = useState(false)
+  const [bindAccountId, setBindAccountId] = useState('')
+  const [bindDraft, setBindDraft] = useState<Record<string, string>>({})
+  const [savingBindId, setSavingBindId] = useState<string | null>(null)
   const [newKey, setNewKey] = useState<string | null>(null)
   const [confirmingId, setConfirmingId] = useState<string | null>(null)
   const [revokingId, setRevokingId] = useState<string | null>(null)
@@ -47,6 +54,16 @@ export function ApiKeyManager() {
         toast({ title: '加载 API Key 失败', description: message, variant: 'destructive' })
       })
       .finally(() => !cancelled && setLoading(false))
+    get<AccountsResponse>('/admin/api/accounts')
+      .then((result) => {
+        if (!cancelled) {
+          setAccounts(result.accounts)
+          setAccountsLoaded(true)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setAccounts([])
+      })
     return () => {
       cancelled = true
     }
@@ -62,10 +79,14 @@ export function ApiKeyManager() {
     setCreating(true)
     setError(null)
     try {
-      const result = await post<ApiKeyCreateResponse>('/admin/api/api-keys', { name: trimmedName })
+      const result = await post<ApiKeyCreateResponse>('/admin/api/api-keys', {
+        name: trimmedName,
+        account_id: bindAccountId || null,
+      })
       setKeys((current) => [result.api_key, ...current])
       setNewKey(result.key)
       setName('')
+      setBindAccountId('')
       setConfirmingId(null)
       toast({ title: 'API Key 已生成', description: '请立即复制并保存完整 Key。' })
     } catch (e: unknown) {
@@ -74,6 +95,25 @@ export function ApiKeyManager() {
       toast({ title: '生成 API Key 失败', description: message, variant: 'destructive' })
     } finally {
       setCreating(false)
+    }
+  }
+
+  async function saveBinding(key: ApiKeyRecord) {
+    const draft = bindDraft[key.id] ?? key.account_id ?? ''
+    setSavingBindId(key.id)
+    setError(null)
+    try {
+      await put(`/admin/api/api-keys/${encodeURIComponent(key.id)}/account`, { account_id: draft || null })
+      setKeys((current) =>
+        current.map((item) => (item.id === key.id ? { ...item, account_id: draft || null } : item)),
+      )
+      toast({ title: '绑定已保存' })
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e)
+      setError(message)
+      toast({ title: '保存绑定失败', description: message, variant: 'destructive' })
+    } finally {
+      setSavingBindId(null)
     }
   }
 
@@ -118,7 +158,7 @@ export function ApiKeyManager() {
               客户端 API Key
             </CardTitle>
             <CardDescription>
-              为不同客户端创建独立 Key；完整值只在生成后显示一次，服务端仅保存哈希。
+              为不同客户端创建独立 Key；可绑定到指定 DeepSeek 账号，绑定后该 Key 只用这个账号，不绑定则在账号池内轮询。完整值只在生成后显示一次，服务端仅保存哈希。
             </CardDescription>
           </div>
           <Badge variant="secondary">{keys.length} 个</Badge>
@@ -139,6 +179,23 @@ export function ApiKeyManager() {
             <Plus className="h-4 w-4" />
             {creating ? '生成中…' : '生成 Key'}
           </Button>
+        </div>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <select
+            value={bindAccountId}
+            onChange={(event) => setBindAccountId(event.target.value)}
+            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm sm:w-auto"
+            aria-label="绑定 DeepSeek 账号"
+            disabled={creating}
+          >
+            <option value="">不绑定（账号池轮询）</option>
+            {accounts.map((account) => (
+              <option key={account.id} value={account.id}>
+                {account.email || account.id}
+              </option>
+            ))}
+          </select>
+          <span className="text-xs text-muted-foreground">绑定后该 Key 只用这个账号；不绑定则在账号池内轮询。</span>
         </div>
 
         {newKey && (
@@ -171,6 +228,38 @@ export function ApiKeyManager() {
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                     <code className="font-mono">{key.prefix}…</code>
                     <span>创建于 {new Date(key.created_at * 1000).toLocaleString()}</span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs text-muted-foreground">绑定账号：</span>
+                    <select
+                      value={bindDraft[key.id] ?? key.account_id ?? ''}
+                      onChange={(event) =>
+                        setBindDraft((current) => ({ ...current, [key.id]: event.target.value }))
+                      }
+                      className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                      aria-label={`为 ${key.name} 选择绑定账号`}
+                    >
+                      <option value="">不绑定（轮询）</option>
+                      {accounts.map((account) => (
+                        <option key={account.id} value={account.id}>
+                          {account.email || account.id}
+                        </option>
+                      ))}
+                    </select>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={
+                        savingBindId === key.id ||
+                        (bindDraft[key.id] ?? key.account_id ?? '') === (key.account_id ?? '')
+                      }
+                      onClick={() => void saveBinding(key)}
+                    >
+                      {savingBindId === key.id ? '保存中…' : '保存'}
+                    </Button>
+                    {key.account_id && accountsLoaded && !accounts.some((account) => account.id === key.account_id) && (
+                      <span className="text-xs text-destructive">该账号已不在池中，调用会报错</span>
+                    )}
                   </div>
                 </div>
                 {confirmingId === key.id ? (

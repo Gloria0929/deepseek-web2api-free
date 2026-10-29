@@ -177,7 +177,20 @@ def _client_ip(request: Request) -> str:
     return get_real_client_ip(request.headers, peer)
 
 
+from contextvars import ContextVar
+
+# Fork feature: per-key DeepSeek account binding. The bound account id is
+# resolved during auth and carried in a ContextVar so every acquire path
+# (chat, messages, responses, stream and non-stream) honours it without
+# threading a new parameter through every handler. A bound key only ever
+# uses its account; it never falls back to the pool and never reuses a
+# cached session from another account (AcquiredAccount already rejects
+# sessions whose account does not match the acquired one).
+_BOUND_ACCOUNT_CTX: ContextVar = ContextVar("bound_account_id", default=None)
+
+
 def _check_api_auth(request: Request):
+    _BOUND_ACCOUNT_CTX.set(None)
     if ALLOW_UNAUTHENTICATED_API:
         return
     # A valid admin-session token is accepted too: the webui signs its
@@ -193,6 +206,7 @@ def _check_api_auth(request: Request):
         raise HTTPException(status_code=401, detail="Missing API key")
     if not API_KEY_STORE.verify(supplied):
         raise HTTPException(status_code=401, detail="Invalid API key")
+    _BOUND_ACCOUNT_CTX.set(API_KEY_STORE.account_id_for_key(supplied))
 
 
 def _check_rate_limit(request: Request) -> dict:
@@ -575,19 +589,29 @@ class AcquiredAccount:
         _UPSTREAM_LIMITER.release()
 
 
-def _acquire(cache_key: str | None = None) -> AcquiredAccount:
+def _acquire(cache_key: str | None = None, pinned_account_id: str | None = None) -> AcquiredAccount:
     # Global upstream concurrency cap (e.g. coding agents spawning parallel
     # sub-agents). Wait for a slot before grabbing a pool account so queued
     # requests don't hold accounts busy.
+    # Fork feature: a client API key bound to a DeepSeek account may only
+    # use that account. Pinned requests never fall back to the pool.
+    pinned = pinned_account_id or _BOUND_ACCOUNT_CTX.get()
     _UPSTREAM_LIMITER.acquire()
     try:
-        cached = SESSION_CACHE.get(cache_key) if cache_key else None
-        # Keep a cached conversation on its creating account whenever it is
-        # available.  If it is busy/error, safely start a fresh conversation
-        # on the next idle account rather than crossing credentials.
-        acct = pool.acquire_by_id(cached.account_id) if cached and cached.account_id else None
-        if acct is None:
-            acct = pool.acquire()
+        if pinned:
+            acct = pool.acquire_by_id(pinned)
+            if acct is None:
+                if pool.get_by_id(pinned) is None:
+                    raise HTTPException(status_code=503, detail="Bound account is not configured")
+                raise HTTPException(status_code=503, detail="Bound account is busy, try again later")
+        else:
+            cached = SESSION_CACHE.get(cache_key) if cache_key else None
+            # Keep a cached conversation on its creating account whenever it is
+            # available.  If it is busy/error, safely start a fresh conversation
+            # on the next idle account rather than crossing credentials.
+            acct = pool.acquire_by_id(cached.account_id) if cached and cached.account_id else None
+            if acct is None:
+                acct = pool.acquire()
     except Exception:
         _UPSTREAM_LIMITER.release()
         raise
@@ -1283,8 +1307,12 @@ RESPONSE_STORE = ResponseStore()
 
 
 def _acquire_response(parent):
+    pinned = _BOUND_ACCOUNT_CTX.get()
     if parent is None:
-        return _acquire()
+        return _acquire(pinned_account_id=pinned)
+    if pinned is not None and pinned != parent['account_id']:
+        raise ResponseError('Bound account does not match the response session account',
+                            409, 'response_context_unavailable')
     _UPSTREAM_LIMITER.acquire()
     try:
         account = pool.acquire_by_id(parent['account_id'])

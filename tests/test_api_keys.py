@@ -67,7 +67,7 @@ def test_legacy_keys_import_only_once_and_store_hashes(tmp_path):
         "SELECT name FROM pragma_table_info('api_keys') ORDER BY cid"
     ).fetchall()
     assert [row[0] for row in rows] == [
-        "id", "name", "key_hash", "key_prefix", "created_at"
+        "id", "name", "key_hash", "key_prefix", "created_at", "account_id"
     ]
     db_bytes = b"".join(
         path.read_bytes()
@@ -85,7 +85,7 @@ def test_generated_key_is_verifiable_and_only_returned_at_creation(api_key_store
     assert key.startswith("sk-")
     assert len(key) > 40
     assert record["name"] == "local client"
-    assert set(record) == {"id", "name", "prefix", "created_at"}
+    assert set(record) == {"id", "name", "prefix", "created_at", "account_id"}
     assert record["prefix"] == key[:8]
     assert api_key_store.verify(key)
     assert not api_key_store.verify("sk-invalid")
@@ -178,3 +178,23 @@ def test_generated_keys_authenticate_v1_and_revocation_takes_effect(server_clien
     assert client.get(
         "/v1/models", headers={"Authorization": f"Bearer {key}"}
     ).status_code == 503
+
+
+def test_key_account_binding(api_key_store):
+    """Fork feature: a key can be bound to one DeepSeek account and rebound."""
+    bound = api_key_store.create_key("bound client", "acc-123")
+    assert bound["api_key"]["account_id"] == "acc-123"
+    assert api_key_store.account_id_for_key(bound["key"]) == "acc-123"
+
+    key_id = bound["api_key"]["id"]
+    assert api_key_store.set_key_account(key_id, "acc-456") is True
+    assert api_key_store.account_id_for_key(bound["key"]) == "acc-456"
+    assert api_key_store.set_key_account(key_id, None) is True
+    assert api_key_store.account_id_for_key(bound["key"]) is None
+
+    assert api_key_store.set_key_account("no-such-id", "acc-1") is False
+    assert api_key_store.account_id_for_key("sk-unknown") is None
+
+    free = api_key_store.create_key("free client")
+    assert free["api_key"]["account_id"] is None
+    assert api_key_store.account_id_for_key(free["key"]) is None

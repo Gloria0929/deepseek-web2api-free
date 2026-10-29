@@ -212,6 +212,11 @@ class AccountReloginResponse(BaseModel):
 
 class ApiKeyCreateRequest(BaseModel):
     name: str
+    account_id: str | None = None
+
+
+class ApiKeyAccountRequest(BaseModel):
+    account_id: str | None = None
 
 
 # ── Router ────────────────────────────────────────────────────
@@ -278,9 +283,20 @@ async def create_api_key(req: ApiKeyCreateRequest, request: Request, response: R
     _check_auth(request)
     response.headers["Cache-Control"] = "no-store"
     try:
-        return get_api_key_store().create_key(req.name)
+        return get_api_key_store().create_key(req.name, req.account_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.put("/api-keys/{key_id}/account")
+async def set_api_key_account(key_id: str, req: ApiKeyAccountRequest, request: Request):
+    _check_auth(request)
+    try:
+        if not get_api_key_store().set_key_account(key_id, req.account_id):
+            raise HTTPException(status_code=404, detail="API key not found")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True}
 
 
 @router.delete("/api-keys/{key_id}")

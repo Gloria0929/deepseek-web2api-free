@@ -99,6 +99,10 @@ class ApiKeyStore:
                     created_at INTEGER NOT NULL
                 )"""
             )
+            # Fork feature: per-key DeepSeek account binding.
+            cols = [row[1] for row in conn.execute("PRAGMA table_info(api_keys)").fetchall()]
+            if "account_id" not in cols:
+                conn.execute("ALTER TABLE api_keys ADD COLUMN account_id TEXT")
             conn.execute(
                 """CREATE TABLE IF NOT EXISTS api_key_store_meta (
                     name TEXT PRIMARY KEY,
@@ -138,13 +142,14 @@ class ApiKeyStore:
             "name": row["name"],
             "prefix": row["key_prefix"],
             "created_at": row["created_at"],
+            "account_id": row["account_id"] if "account_id" in row.keys() else None,
         }
 
     def list_keys(self) -> list[dict]:
         conn = self._connect()
         try:
             rows = conn.execute(
-                "SELECT id, name, key_prefix, created_at FROM api_keys "
+                "SELECT id, name, key_prefix, created_at, account_id FROM api_keys "
                 "ORDER BY created_at DESC, id DESC"
             ).fetchall()
             return [self._public_record(row) for row in rows]
@@ -172,12 +177,35 @@ class ApiKeyStore:
         finally:
             conn.close()
 
-    def create_key(self, name: str) -> dict:
+    def account_id_for_key(self, candidate: str) -> str | None:
+        """Return the DeepSeek account id bound to a client API key, or None.
+
+        None means the key is unbound (round-robin pool behaviour) or unknown.
+        """
+        if not candidate:
+            return None
+        digest = self._key_hash(candidate)
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT account_id FROM api_keys WHERE key_hash = ?", (digest,)
+            ).fetchone()
+            if row is None:
+                return None
+            bound = row["account_id"]
+            return bound.strip() if bound and bound.strip() else None
+        finally:
+            conn.close()
+
+    def create_key(self, name: str, account_id: str | None = None) -> dict:
         normalized_name = name.strip()
         if not normalized_name:
             raise ValueError("Key name is required")
         if len(normalized_name) > 64:
             raise ValueError("Key name must be 64 characters or fewer")
+        normalized_account = (account_id or "").strip() or None
+        if normalized_account is not None and len(normalized_account) > 64:
+            raise ValueError("account_id must be 64 characters or fewer")
 
         key = f"sk-{secrets.token_urlsafe(32)}"
         created_at = int(time.time())
@@ -185,22 +213,41 @@ class ApiKeyStore:
         try:
             conn.execute(
                 """INSERT INTO api_keys
-                   (id, name, key_hash, key_prefix, created_at)
-                   VALUES (?, ?, ?, ?, ?)""",
+                   (id, name, key_hash, key_prefix, created_at, account_id)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
                 (
                     secrets.token_hex(8),
                     normalized_name,
                     self._key_hash(key),
                     self._prefix(key),
                     created_at,
+                    normalized_account,
                 ),
             )
             conn.commit()
             row = conn.execute(
-                "SELECT id, name, key_prefix, created_at FROM api_keys WHERE key_hash = ?",
+                "SELECT id, name, key_prefix, created_at, account_id FROM api_keys WHERE key_hash = ?",
                 (self._key_hash(key),),
             ).fetchone()
             return {"key": key, "api_key": self._public_record(row)}
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def set_key_account(self, key_id: str, account_id: str | None) -> bool:
+        """Bind (or unbind, with None) a client API key to a DeepSeek account."""
+        normalized = (account_id or "").strip() or None
+        if normalized is not None and len(normalized) > 64:
+            raise ValueError("account_id must be 64 characters or fewer")
+        conn = self._connect()
+        try:
+            cursor = conn.execute(
+                "UPDATE api_keys SET account_id = ? WHERE id = ?", (normalized, key_id)
+            )
+            conn.commit()
+            return cursor.rowcount > 0
         except Exception:
             conn.rollback()
             raise

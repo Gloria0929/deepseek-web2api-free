@@ -167,6 +167,21 @@ WebUI 其他功能包括：
 
 ---
 
+## Key 绑定账号（本 fork 新增）
+
+默认情况下，客户端 Key 与账号池是解耦的：任何 Key 都按轮询使用池内任意账号。本 fork 增加绑定能力：
+
+- WebUI「设置」页创建 Key 时可选择绑定一个 DeepSeek 账号；Key 列表里也可随时改绑或解绑。
+- 绑定后，该 Key 的请求只走指定账号，不会 fallback 到池内其他账号；指定账号未配置或正忙时，请求直接返回 503（`Bound account is not configured` / `Bound account is busy`）。
+- Responses 接口续聊时，若绑定账号与会话原账号不一致，返回 409。
+- 不绑定的 Key 保持原有行为（账号池轮询；多轮会话按调用方隔离，缓存会话仍粘在创建它的账号上）。
+
+管理接口（需管理员登录）：
+
+- 创建：`POST /admin/api/api-keys`，body 增加可选字段 `account_id`。
+- 改绑/解绑：`PUT /admin/api/api-keys/{key_id}/account`，body `{"account_id": "<账号id>" | null}`。
+- 列表：`GET /admin/api/api-keys` 返回的每条记录含 `account_id`（未绑定为 `null`）。
+
 ## 非交互式账号池配置（代理 / 自动化工具）
 
 > **给 SDK、脚本、curl、CI、代理用**，不经过 WebUI 面板。账号凭证统一存储在 `data/accounts.json`；`.env` 不读取账号凭证。非交互场景直接维护该文件即可。
