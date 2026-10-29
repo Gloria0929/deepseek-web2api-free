@@ -182,6 +182,28 @@ WebUI 其他功能包括：
 - 改绑/解绑：`PUT /admin/api/api-keys/{key_id}/account`，body `{"account_id": "<账号id>" | null}`。
 - 列表：`GET /admin/api/api-keys` 返回的每条记录含 `account_id`（未绑定为 `null`）。
 
+## Docker 部署（本 fork 新增）
+
+仓库自带 `Dockerfile`（多阶段构建：先编 WebUI，再装 Python 依赖）与 `docker-compose.yml`，不用在宿主机装 Node/Python：
+
+```bash
+# 1. 按 .env.example 复制出 .env，并在里面设置 DEEPSEEK_ADMIN_PASSWORD
+cp .env.example .env
+
+# 2. 启动（首次会构建镜像）
+docker compose up -d --build
+
+# 3. 打开 WebUI
+# http://服务器IP:18080/webui/
+```
+
+说明：
+
+- 账号池与 Key 数据存在 `./data`（挂载到容器内 `/app/data`），删容器不丢数据；换机迁移时连 `data` 目录一起拷走。
+- 端口、模型等在 `docker-compose.yml` 的 `environment` 里改，或直接改端口映射。
+- 不走 compose 也行：`docker build -t deepseek-web2api-free . && docker run -d -p 18080:18080 -v ./data:/app/data --env-file .env deepseek-web2api-free`。
+- 国内网络构建慢时，build 可传 `--build-arg NPM_REGISTRY=https://registry.npmmirror.com --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple`。
+
 ## 非交互式账号池配置（代理 / 自动化工具）
 
 > **给 SDK、脚本、curl、CI、代理用**，不经过 WebUI 面板。账号凭证统一存储在 `data/accounts.json`；`.env` 不读取账号凭证。非交互场景直接维护该文件即可。

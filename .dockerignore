@@ -1,0 +1,8 @@
+.git
+__pycache__
+*.pyc
+data
+.env
+webui-new/node_modules
+webui-new/dist
+node_modules

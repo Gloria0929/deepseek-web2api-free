@@ -1,0 +1,21 @@
+services:
+  deepseek-web2api-free:
+    build: .
+    image: deepseek-web2api-free:latest
+    container_name: deepseek-web2api-free
+    restart: unless-stopped
+    ports:
+      - "18080:18080"
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      HOST: 0.0.0.0
+      PORT: 18080
+      ALLOW_UNAUTHENTICATED_API: "false"
+      MODEL_NAME: deepseek-chat
+      THINKING: auto
+      SEARCH: auto
+      LOG_LEVEL: INFO
